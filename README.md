@@ -39,22 +39,21 @@ node tools/encrypt.js --new-passwords
 
 ## Cập nhật dữ liệu (thay file Excel)
 
-1. Chép file Excel mới đè lên `data/Report_CSKH.xlsx`, giữ nguyên tên.
-2. Mã hoá lại:
+**Kéo thả file Excel mới vào `capnhat.bat`** là xong. Script tự làm 4 việc:
+1. Chép file vào `data/Report_CSKH.xlsx`.
+2. Mã hoá.
+3. Kiểm tra không có file Excel gốc hay mật khẩu nào sắp bị đưa lên GitHub.
+4. Commit và push.
 
-   ```bash
-   node tools/encrypt.js
-   ```
+Vercel / GitHub Pages tự deploy lại sau khi push (khoảng 1–2 phút); bạn chỉ cần tải lại trang.
 
-3. Đẩy lên GitHub:
+Cách khác, chạy bằng lệnh:
 
-   ```bash
-   git add data/Report_CSKH.enc data/keys.json
-   git commit -m "Cập nhật dữ liệu CSKH"
-   git push
-   ```
+```bash
+node tools/update.js "D:\duong-dan\file-moi.xlsx"
+```
 
-4. Tải lại trang. GitHub Pages có thể mất 1–2 phút mới cập nhật.
+> **Không** đưa thẳng file `.xlsx` lên GitHub (kể cả qua nút Upload trên trang GitHub). Web không đọc file đó, và repo public sẽ làm lộ toàn bộ dữ liệu khách hàng.
 
 Về file Excel:
 - File cần có một sheet chứa cột "Điện thoại" và "Trạng thái". Web nhận cột theo **tên tiêu đề**, không theo vị trí.
@@ -63,11 +62,12 @@ Về file Excel:
 
 ## Cách chạy
 
+- **Vercel**: *Add New → Project* → chọn repo → **Framework Preset: Other**, Root Directory để trống, không cần Build Command → Deploy. Cấu hình đã có sẵn trong `vercel.json` và `.vercelignore` (web là trang tĩnh, không có server). Mỗi lần push, Vercel tự deploy lại.
 - **GitHub Pages**: vào repo → *Settings → Pages → Branch: `main` / `(root)` → Save*. Web chạy tại `https://<tài-khoản>.github.io/<tên-repo>/`.
 - **Trên máy** (cần Node.js): chạy lệnh dưới đây rồi mở `http://localhost:8080`.
 
   ```bash
-  node server.js
+  node tools/server.js
   ```
 
   Chức năng mã hoá của trình duyệt chỉ chạy trên `https://` hoặc `localhost`. Truy cập từ máy khác qua `http://<IP>` sẽ không đăng nhập được, hãy dùng GitHub Pages.
@@ -88,9 +88,10 @@ Về file Excel:
 
 | File | Vai trò |
 |---|---|
-| `index.html`, `style.css` | Giao diện |
-| `app.js` | Đăng nhập, giải mã, thống kê, nhận định, kiểm tra dữ liệu, form, xuất Excel |
+| `index.html`, `assets/style.css` | Giao diện |
+| `assets/app.js` | Đăng nhập, giải mã, thống kê, nhận định, kiểm tra dữ liệu, form, xuất Excel |
 | `tools/encrypt.js` | Tạo tài khoản và mã hoá dữ liệu |
 | `data/Report_CSKH.enc`, `data/keys.json` | Dữ liệu đã mã hoá |
 | `vendor/xlsx.full.min.js` | Thư viện SheetJS 0.18.5 |
-| `server.js` | Web server chạy trên máy; tự chặn không phục vụ file `.xlsx` và `secrets.local.json` |
+| `vercel.json`, `.vercelignore` | Cấu hình deploy tĩnh trên Vercel |
+| `tools/server.js` | Web server chạy trên máy; tự chặn không phục vụ file `.xlsx` và `secrets.local.json` |

@@ -1,6 +1,7 @@
-// Server tĩnh đơn giản (tuỳ chọn) — chạy: node server.js  rồi mở http://localhost:8080
+// Server tĩnh chạy trên máy (tuỳ chọn) — chạy: node tools/server.js  rồi mở http://localhost:8080
+// (Không dùng trên Vercel/GitHub Pages — ở đó web là trang tĩnh.)
 const http = require("http"), fs = require("fs"), path = require("path");
-const root = __dirname, port = process.env.PORT || 8080;
+const root = require("path").join(__dirname, ".."), port = process.env.PORT || 8080;
 const types = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".xlsx": "application/octet-stream", ".md": "text/plain; charset=utf-8", ".json": "application/json; charset=utf-8", ".enc": "application/octet-stream"};
 http.createServer((req, res) => {
   let p = decodeURIComponent(req.url.split("?")[0]); if (p === "/") p = "/index.html";

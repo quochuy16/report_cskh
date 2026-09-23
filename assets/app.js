@@ -309,7 +309,7 @@ async function loadDataFile() {
   try { res = await fetch(DATA_FILE + "?t=" + Date.now(), {cache: "no-store"}); }
   catch (e) {
     setStatus(location.protocol === "file:"
-      ? `Trình duyệt không cho đọc file khi mở trực tiếp index.html. Hãy chạy <code>node server.js</code> trong thư mục web rồi mở <b>http://localhost:8080</b>, hoặc mở bản trên GitHub Pages.`
+      ? `Trình duyệt không cho đọc file khi mở trực tiếp index.html. Hãy chạy <code>node tools/server.js</code> trong thư mục web rồi mở <b>http://localhost:8080</b>, hoặc mở bản đã deploy (Vercel / GitHub Pages).`
       : `Không tải được <code>${esc(DATA_FILE)}</code>: ${esc(e.message)}`, true);
     return;
   }
