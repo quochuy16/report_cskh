@@ -221,3 +221,25 @@ td.flag{color:var(--warn-ink)}
 @media (max-width:760px){.wk-status{padding-bottom:0}}
 .wk-cols{font-size:11px;color:var(--muted);font-weight:600;position:sticky;top:0;background:var(--bg);z-index:1;padding-bottom:2px}
 .wk-cols span:first-child{text-align:right}
+
+/* ===== Database: hộp xác nhận, nhập Excel, tài khoản, lịch sử ===== */
+.modal{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:42;width:min(520px,calc(100% - 32px));background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:20px;box-shadow:var(--shadow)}
+.modal p{margin:0 0 16px;line-height:1.6}
+#importBox{margin-top:16px}
+.banner.err{border-left-color:var(--crit)}
+.banner code,#userSecret code{background:var(--surface-2);padding:2px 8px;border-radius:6px;font-size:13px;user-select:all}
+.user-form{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.user-form input{flex:1;min-width:200px}
+.meter{height:10px;background:var(--surface-2);border-radius:999px;overflow:hidden}
+.meter-fill{height:100%;background:var(--good)}
+.meter-fill.hi{background:var(--crit)}
+.row-inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px}
+.hist-box{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
+.hist-title{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:10px 0 6px}
+.hist-item{padding:8px 0;border-bottom:1px solid var(--line);font-size:13px}
+.hist-meta{color:var(--ink-2);margin-bottom:4px}
+.hist-diff{display:grid;grid-template-columns:150px 1fr;gap:4px 10px;padding:2px 0;color:var(--ink-2)}
+.hist-diff span{color:var(--muted);font-size:12px}
+.hist-diff del{color:var(--crit-ink);text-decoration:line-through;word-break:break-word}
+.hist-diff ins{color:var(--good-ink);text-decoration:none;word-break:break-word}
+@media (max-width:760px){.hist-diff{grid-template-columns:1fr}}

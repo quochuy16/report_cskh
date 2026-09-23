@@ -1,8 +1,6 @@
-# Web là trang tĩnh — không đưa công cụ chạy máy/ dữ liệu gốc lên Vercel
+# Không đưa lên Vercel: dữ liệu gốc, mật khẩu cũ, công cụ chạy máy
+data/
 tools/
-capnhat.bat
 secrets.local.json
 *.local.json
-data/*.xlsx
-data/*.xls
-data/*.xlsm
+.localdb/

@@ -12,14 +12,16 @@
   <div class="top-row">
     <div class="brand"><h1>Sổ CSKH SmartHome</h1><span id="srcInfo">Chưa có dữ liệu</span></div>
     <span id="userChip" class="user-chip"></span>
+    <input type="file" id="importFile" accept=".xlsx,.xlsm" hidden>
+    <button class="btn" id="btnImport" hidden title="Nhập file Excel vào database (thay thế dữ liệu hiện tại)">Nhập Excel</button>
     <button class="btn primary" id="btnExport" disabled hidden>Xuất Excel</button>
-    <span id="clearHost" hidden><button class="btn danger" id="btnClear" disabled title="Bỏ các chỉnh sửa trên web, quay về đúng dữ liệu trong file Excel">Bỏ chỉnh sửa</button></span>
   </div>
   <nav class="tabs" role="tablist">
     <button role="tab" aria-selected="true" data-view="overview">Tổng quan</button>
     <button role="tab" aria-selected="false" data-view="list">Danh sách KH</button>
     <button role="tab" aria-selected="false" data-view="check">Kiểm tra dữ liệu <span class="badge" id="checkBadge" hidden></span></button>
     <button role="tab" aria-selected="false" data-view="add">+ Thêm khách hàng</button>
+    <button role="tab" aria-selected="false" data-view="users" hidden>Tài khoản &amp; hệ thống</button>
   </nav>
 </header>
 
@@ -27,7 +29,7 @@
   <div id="loginBox" class="login" hidden>
     <form id="loginForm" class="card" autocomplete="on">
       <h2>Đăng nhập</h2>
-      <p class="sub">Dữ liệu khách hàng đã được mã hoá. Đăng nhập để giải mã và xem.</p>
+      <p class="sub">Đăng nhập để xem và cập nhật dữ liệu khách hàng.</p>
       <div class="f"><label for="lgUser">Tên đăng nhập</label><input id="lgUser" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required></div>
       <div class="f"><label for="lgPass">Mật khẩu</label><input id="lgPass" name="password" type="password" autocomplete="current-password" required></div>
       <p class="lg-msg" id="lgMsg" role="alert"></p>
@@ -35,7 +37,7 @@
     </form>
   </div>
   <div id="statusBox" class="drop"><h2>Đang tải…</h2><p>Đang khởi động.</p></div>
-  <div id="prevBox" class="banner" hidden></div>
+  <div id="importBox" class="banner" hidden></div>
 
   <section class="view" id="view-overview">
     <div class="filters">
@@ -82,6 +84,24 @@
     <div class="kpis" id="checkKpis"></div>
     <div class="card"><h2>Danh sách vấn đề</h2><p class="sub">Bấm một dòng để xem các khách hàng bị ảnh hưởng và sửa trực tiếp</p><div class="tbl-wrap" id="tbCheck"></div></div>
     <div class="card" style="margin-top:12px"><h2>Đối chiếu với sheet “Thống kê” trong Excel</h2><p class="sub">Vì sao số trên web có thể khác file Excel</p><div id="reconcile"></div></div>
+  </section>
+
+  <section class="view" id="view-users" hidden>
+    <div class="grid">
+      <div class="card c8">
+        <h2>Tài khoản</h2><p class="sub">Mỗi người một tài khoản. Mật khẩu được tạo ngẫu nhiên và chỉ hiện một lần.</p>
+        <div id="userSecret" class="banner" hidden></div>
+        <form id="userForm" class="user-form">
+          <input class="ctl" id="nuName" placeholder="Tên đăng nhập, VD: lan.nguyen" autocomplete="off" required>
+          <select class="ctl" id="nuRole"><option value="viewer">Chỉ xem</option><option value="editor">Biên tập</option><option value="admin">Quản trị</option></select>
+          <button class="btn primary" type="submit">Tạo tài khoản</button>
+          <span class="warn" id="nuMsg"></span>
+        </form>
+        <div class="tbl-wrap" id="tbUsers"></div>
+        <p class="sub" style="margin-top:12px">Quyền: <b>Quản trị</b> – toàn quyền, nhập Excel, quản lý tài khoản · <b>Biên tập</b> – thêm/sửa KH, xuất Excel · <b>Chỉ xem</b> – chỉ xem.</p>
+      </div>
+      <div class="card c4"><h2>Dung lượng database</h2><p class="sub">Gói miễn phí Neon: 0,5 GB</p><div id="storageBox"></div></div>
+    </div>
   </section>
 
   <section class="view" id="view-add" hidden>

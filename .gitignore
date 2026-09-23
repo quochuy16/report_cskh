@@ -1,12 +1,19 @@
-# KHÔNG đưa dữ liệu gốc và mật khẩu lên GitHub
-data/*.xlsx
-data/*.xls
-data/*.xlsm
+# KHÔNG đưa dữ liệu khách hàng và mật khẩu lên GitHub
+data/
+*.xlsx
+*.xls
+*.xlsm
 secrets.local.json
 *.local.json
+.env
+.env.*
+
+# thư viện & database thử trên máy
+node_modules/
+.localdb/
+.vercel/
 
 # rác hệ thống
-_test.xlsx
 ~$*
 *.tmp
 .DS_Store

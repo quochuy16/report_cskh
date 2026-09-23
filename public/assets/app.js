@@ -3,13 +3,10 @@
    Import Excel → thống kê + nhận định + kiểm tra dữ liệu → sửa/thêm KH → xuất lại Excel
    (giữ nguyên các cột và sheet khác của file gốc). */
 
-// ================= Nguồn dữ liệu =================
-// Web đọc file dữ liệu ĐÃ MÃ HOÁ (tạo bằng: node tools/encrypt.js từ data/Report_CSKH.xlsx).
-// Muốn cập nhật dữ liệu: chép file Excel mới đè lên data/Report_CSKH.xlsx, chạy lại tools/encrypt.js rồi đẩy lên GitHub.
-const DATA_FILE = "data/Report_CSKH.enc";
-const KEYS_FILE = "data/keys.json";
-const IDLE_MIN = 60;
-const STATE_VERSION = 3; // tăng khi đổi cách đọc file để trình duyệt đọc lại từ đầu
+// ================= Cấu hình =================
+// Dữ liệu lưu trong database (Postgres) qua các API /api/* — xem thư mục api/.
+const IDLE_MIN = 60; // tự đăng xuất sau 60 phút không thao tác
+const SYNC_SEC = 45; // cứ 45 giây lấy các thay đổi mới của người khác
 
 // ================= Danh mục =================
 // Cột lõi của sheet danh sách KH: [key, tiêu đề cột trong Excel]
@@ -140,78 +137,38 @@ function delta(cur, prev, {unit = "%", inverse = false} = {}) { // hiển thị 
   return `<span class="delta ${cls}">${d > 0 ? "▲" : d < 0 ? "▼" : "•"} ${Math.abs(d).toLocaleString("vi-VN", {maximumFractionDigits: 1})} điểm</span>`;
 }
 
-// ================= Lưu trữ (IndexedDB) =================
-const idb = {
-  open() { return this._p ||= new Promise((res, rej) => { const r = indexedDB.open("cskh-smarthome", 1); r.onupgradeneeded = () => r.result.createObjectStore("kv"); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
-  async get(k) { const db = await this.open(); return new Promise((res, rej) => { const q = db.transaction("kv").objectStore("kv").get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); },
-  async set(k, v) { const db = await this.open(); return new Promise((res, rej) => { const t = db.transaction("kv", "readwrite"); t.objectStore("kv").put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); },
-  async del(k) { const db = await this.open(); return new Promise(res => { const t = db.transaction("kv", "readwrite"); t.objectStore("kv").delete(k); t.oncomplete = () => res(); }); },
-};
+// ================= Kết nối server (API) =================
+async function api(path, {method = "GET", body} = {}) {
+  let res;
+  try { res = await fetch(path, {method, headers: {"Content-Type": "application/json", "X-CSKH": "1"}, credentials: "same-origin", body: body === undefined ? undefined : JSON.stringify(body)}); }
+  catch (e) { throw Object.assign(new Error("Không kết nối được máy chủ. Kiểm tra mạng rồi thử lại."), {status: 0}); }
+  let data = null; try { data = await res.json(); } catch (e) {}
+  if (res.status === 401 && path !== "/api/login" && path !== "/api/me") { onSessionLost(); }
+  if (!res.ok) throw Object.assign(new Error((data && data.error) || `Lỗi ${res.status}`), {status: res.status, data});
+  return data;
+}
 
-// ================= Đăng nhập, phân quyền & mã hoá =================
-/* Dữ liệu trên GitHub chỉ có bản đã mã hoá (AES-256-GCM). Mỗi tài khoản có một bản khoá dữ liệu
-   được bọc bằng mật khẩu (PBKDF2-SHA256) trong data/keys.json — sai mật khẩu thì không giải mã được.
-   Phân quyền admin/editor/viewer được áp dụng trên giao diện; chỉnh sửa chỉ lưu trong trình duyệt,
-   file trên GitHub chỉ thay đổi được bởi người có quyền push vào repo. */
+// ================= Đăng nhập & phân quyền =================
+// Quyền được kiểm tra ở SERVER; phần dưới chỉ để ẩn/hiện nút cho đúng quyền.
 const ROLE_LABEL = {admin: "Quản trị", editor: "Biên tập", viewer: "Chỉ xem"};
-let SESSION = null; // {username, role, key: CryptoKey}
+let USER = null; // {id, username, role}
 const can = {
-  edit: () => !!SESSION && (SESSION.role === "admin" || SESSION.role === "editor"),   // thêm / sửa KH
-  del: () => !!SESSION && SESSION.role === "admin",                                     // xoá KH
-  export: () => !!SESSION && (SESSION.role === "admin" || SESSION.role === "editor"), // xuất Excel
-  reset: () => !!SESSION && SESSION.role === "admin",                                   // bỏ toàn bộ chỉnh sửa
+  edit: () => !!USER && (USER.role === "admin" || USER.role === "editor"),   // thêm / sửa KH
+  del: () => !!USER && USER.role === "admin",                                   // xoá KH
+  export: () => !!USER && (USER.role === "admin" || USER.role === "editor"), // xuất Excel
+  admin: () => !!USER && USER.role === "admin",                                 // nhập Excel, quản lý tài khoản
 };
-const te = new TextEncoder(), td = new TextDecoder();
-const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
-async function hex256(s) { return [...new Uint8Array(await crypto.subtle.digest("SHA-256", te.encode(s)))].map(b => b.toString(16).padStart(2, "0")).join(""); }
-const aesKey = raw => crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
-const decryptBuf = (key, iv, ct) => crypto.subtle.decrypt({name: "AES-GCM", iv}, key, ct);
-async function encryptBuf(key, data) { const iv = crypto.getRandomValues(new Uint8Array(12)); return {iv, ct: await crypto.subtle.encrypt({name: "AES-GCM", iv}, key, data)}; }
-async function decryptDataFile(buf) {
-  const u = new Uint8Array(buf);
-  if (td.decode(u.slice(0, 5)) !== "CSKH1") throw new Error("File dữ liệu không đúng định dạng đã mã hoá (hãy tạo bằng node tools/encrypt.js)");
-  return decryptBuf(SESSION.key, u.slice(5, 17), u.slice(17));
-}
-// Trạng thái lưu trong trình duyệt (IndexedDB) cũng được mã hoá bằng khoá dữ liệu
-const ser = o => JSON.stringify(o, function (k, v) { const raw = this[k]; return raw instanceof Date ? {__d: raw.getTime()} : v; });
-const deser = s => JSON.parse(s, (k, v) => v && typeof v === "object" && v.__d !== undefined && Object.keys(v).length === 1 ? new Date(v.__d) : v);
-async function saveEnc(name, obj) { const {iv, ct} = await encryptBuf(SESSION.key, te.encode(ser(obj))); await idb.set(name, {iv, ct}); }
-async function loadEnc(name) { const e = await idb.get(name); if (!e || !e.iv) return null; try { return deser(td.decode(await decryptBuf(SESSION.key, e.iv, e.ct))); } catch (err) { return null; } }
-
-async function login(username, password) {
-  const res = await fetch(KEYS_FILE + "?t=" + Date.now(), {cache: "no-store"});
-  if (!res.ok) throw new Error(`Không tải được ${KEYS_FILE} (lỗi ${res.status}). Hãy chạy node tools/encrypt.js`);
-  const K = await res.json();
-  const id = await hex256("cskh-user:" + username.trim().toLowerCase());
-  const hit = K.users.find(x => x.id === id);
-  const base = await crypto.subtle.importKey("raw", te.encode(password), "PBKDF2", false, ["deriveKey"]);
-  const salt = hit ? unb64(hit.salt) : crypto.getRandomValues(new Uint8Array(16)); // vẫn tính khi sai username để không lộ username nào tồn tại
-  const wrap = await crypto.subtle.deriveKey({name: "PBKDF2", salt, iterations: K.iter, hash: "SHA-256"}, base, {name: "AES-GCM", length: 256}, false, ["decrypt"]);
-  const fail = new Error("Sai tên đăng nhập hoặc mật khẩu");
-  if (!hit) throw fail;
-  let info; try { info = JSON.parse(td.decode(await decryptBuf(wrap, unb64(hit.iv), unb64(hit.ct)))); } catch (e) { throw fail; }
-  SESSION = {username: info.username, role: info.role, key: await aesKey(unb64(info.dataKey))};
-  try { sessionStorage.setItem("cskh.session", JSON.stringify({u: info.username, r: info.role, k: info.dataKey, t: Date.now()})); } catch (e) {}
-}
-async function restoreSession() {
-  try {
-    const s = JSON.parse(sessionStorage.getItem("cskh.session") || "null"); if (!s) return false;
-    if (Date.now() - (s.t || 0) > IDLE_MIN * 60e3) { sessionStorage.removeItem("cskh.session"); sessionStorage.setItem("cskh.msg", "Phiên làm việc đã hết hạn, vui lòng đăng nhập lại."); return false; }
-    SESSION = {username: s.u, role: s.r, key: await aesKey(unb64(s.k))}; return true;
-  } catch (e) { return false; }
-}
+let sessionLost = false;
+function onSessionLost() { if (sessionLost || !USER) return; sessionLost = true; sessionStorage.setItem("cskh.msg", "Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại."); location.reload(); }
 async function logout(msg) {
-  if (S && SESSION) { clearTimeout(saveT); try { await saveEnc("state", S); } catch (e) {} }
-  try { sessionStorage.removeItem("cskh.session"); if (msg) sessionStorage.setItem("cskh.msg", msg); } catch (e) {}
+  try { await api("/api/logout", {method: "POST", body: {}}); } catch (e) {}
+  if (msg) sessionStorage.setItem("cskh.msg", msg);
   location.reload();
 }
 // Tự đăng xuất khi không thao tác quá IDLE_MIN phút
-let lastAct = Date.now(), lastTouch = 0;
-["mousemove", "keydown", "click", "touchstart", "scroll"].forEach(ev => document.addEventListener(ev, () => {
-  lastAct = Date.now();
-  if (SESSION && lastAct - lastTouch > 60e3) { lastTouch = lastAct; try { const s = JSON.parse(sessionStorage.getItem("cskh.session")); if (s) { s.t = lastAct; sessionStorage.setItem("cskh.session", JSON.stringify(s)); } } catch (e) {} }
-}, {passive: true}));
-setInterval(() => { if (SESSION && Date.now() - lastAct > IDLE_MIN * 60e3) logout("Đã tự đăng xuất sau " + IDLE_MIN + " phút không thao tác."); }, 30e3);
+let lastAct = Date.now();
+["mousemove", "keydown", "click", "touchstart", "scroll"].forEach(ev => document.addEventListener(ev, () => { lastAct = Date.now(); }, {passive: true}));
+setInterval(() => { if (USER && Date.now() - lastAct > IDLE_MIN * 60e3) logout("Đã tự đăng xuất sau " + IDLE_MIN + " phút không thao tác."); }, 30e3);
 
 function showLogin() {
   $("#statusBox").hidden = true; $("#loginBox").hidden = false;
@@ -223,27 +180,30 @@ $("#loginForm").onsubmit = async ev => {
   const btn = $("#lgBtn"), msg = $("#lgMsg"); msg.textContent = "";
   const u = $("#lgUser").value, p = $("#lgPass").value; if (!u.trim() || !p) { msg.textContent = "Nhập tên đăng nhập và mật khẩu"; return; }
   btn.disabled = true; btn.textContent = "Đang kiểm tra…";
-  try { await login(u, p); $("#lgPass").value = ""; afterLogin(); }
+  try { const r = await api("/api/login", {method: "POST", body: {username: u, password: p}}); USER = r.user; $("#lgPass").value = ""; afterLogin(); }
   catch (e) { msg.textContent = e.message; btn.disabled = false; btn.textContent = "Đăng nhập"; $("#lgPass").select(); }
 };
 function afterLogin() {
   $("#loginBox").hidden = true;
-  document.body.dataset.role = SESSION.role;
-  $("#userChip").innerHTML = `<span class="who"><b>${esc(SESSION.username)}</b><span class="role role-${SESSION.role}">${ROLE_LABEL[SESSION.role] || SESSION.role}</span></span><button class="btn" id="btnLogout">Đăng xuất</button>`;
+  document.body.dataset.role = USER.role;
+  $("#userChip").innerHTML = `<span class="who"><b>${esc(USER.username)}</b><span class="role role-${USER.role}">${ROLE_LABEL[USER.role] || USER.role}</span></span><button class="btn" id="btnLogout">Đăng xuất</button>`;
   $("#btnLogout").onclick = () => logout();
-  loadDataFile();
+  loadAll();
 }
 
 // ================= Trạng thái ứng dụng =================
-let S = null;          // {fileName, sheetName, headerRow, importedAt, header[], colOf{}, records[]}
-let origFile = null;   // ArrayBuffer của file Excel gốc (để giữ các sheet khác khi xuất)
-let all = [];          // records chưa bị xoá
+let S = null;          // {meta…: header[], colOf{}, sheetName, headerRow, fileName, importedAt, importedBy, importId; records[]}
+let all = [];          // records đang hiển thị (chưa xoá)
 let issueMap = new Map(); // id -> [mã vấn đề]
-let saveT;
-function persist() { clearTimeout(saveT); saveT = setTimeout(() => saveEnc("state", S).catch(e => console.error(e)), 300); if (S) showData(true); }
-function refreshAll() { all = S ? S.records.filter(r => !r._deleted) : []; computeIssues(); refreshOptions(); renderAll(); }
+let lastSync = null, syncTimer = null;
+function refreshAll() { all = S ? S.records.filter(r => !r.deleted) : []; computeIssues(); refreshOptions(); renderAll(); showData(!!S); }
 const issuesOf = r => issueMap.get(r.id) || [];
 const hasIssue = (r, code) => issuesOf(r).includes(code);
+// Cập nhật một bản ghi trong bộ nhớ sau khi server trả về
+function upsertLocal(rec) {
+  const i = S.records.findIndex(x => x.id === rec.id);
+  if (i >= 0) S.records[i] = rec; else S.records.push(rec);
+}
 
 // ================= Đọc file Excel =================
 const ST_CANON = s => { const t = String(s ?? "").trim(); return TT.find(x => x.toLowerCase() === t.toLowerCase()) || t; };
@@ -254,7 +214,7 @@ function cellStr(v, key) {
     if (key === "sdt") { const s = String(Math.round(v)); return s.length === 9 ? "0" + s : s; }
     return String(Math.abs(v - Math.round(v)) < 1e-6 ? Math.round(v) : v);
   }
-  return String(v).trim();
+  return String(v).replace(/\r\n?/g, "\n").trim();
 }
 function parseDateStr(s) { // chuỗi ngày dạng m/d/yy -> ISO
   const m = String(s).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/); if (!m) return "";
@@ -301,112 +261,149 @@ function mapHeader(header) {
   });
   return colOf;
 }
-function recordFromRow(row, colOf, i, excelRow) {
-  const r = {id: "R" + String(i + 1).padStart(5, "0"), _row: excelRow};
+// Chuyển một dòng Excel thành bản ghi lưu vào database
+function recordFromRow(row, colOf, weekCols, excelRow) {
+  const r = {_row: excelRow};
   for (const [k] of CORE) {
     if (colOf[k] == null) continue;
     let v = cellStr(row[colOf[k]], k);
     if (k === "ngay" && v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) v = parseDateStr(v) || v;
-    if (k === "trangThai") v = ST_CANON(v);
+    if (k === "trangThai") { const raw = row[colOf[k]]; v = ST_CANON(v); if (raw != null && String(raw) !== v && TT.includes(v)) r._spell = String(raw); }
     if (k === "nguon" && v.toLowerCase() === "khác") v = "Khác";
     if (v) r[k] = v;
   }
   if (!r.nam && /^\d{4}-/.test(r.ngay || "")) { r.nam = r.ngay.slice(0, 4); r._namDerived = true; }
   if (!r.thang && /^\d{4}-/.test(r.ngay || "")) r.thang = String(+r.ngay.slice(5, 7));
-  r._orig = Object.fromEntries(CORE.map(([k]) => [k, r[k] ?? ""]));
-  let end = row.length; while (end > 0 && (row[end - 1] == null || row[end - 1] === "")) end--;
-  r._raw = row.slice(0, end);
+  // Nhật ký tuần → {"2026-22": "nội dung"} ; các cột khác (không phải cột chính) giữ nguyên để xuất lại
+  const core = new Set(Object.values(colOf)), weekly = {}, extra = {};
+  row.forEach((v, i) => {
+    if (v == null || core.has(i) || (typeof v === "string" && !v.trim())) return;
+    if (weekCols[i]) { weekly[`${weekCols[i].y}-${weekCols[i].w}`] = v instanceof Date ? dmy(isoOf(v)) : String(v).replace(/\r\n?/g, "\n").trim(); return; }
+    extra[i] = v instanceof Date ? {d: isoOf(v)} : typeof v === "string" ? v.replace(/\r\n?/g, "\n") : v;
+  });
+  if (Object.keys(weekly).length) r.weekly = weekly;
+  if (Object.keys(extra).length) r.extra = extra;
   return r;
 }
-// Đọc file Excel (ArrayBuffer) thành trạng thái ứng dụng
-function parseWorkbook(buf, fileName, sig, modified) {
+// Đọc file Excel → {meta, rows, template}. template = file gốc nhưng sheet danh sách để trống (giữ các sheet khác + công thức)
+function parseWorkbook(buf, fileName) {
   const wb = XLSX.read(buf, {type: "array", cellNF: true});
   const found = findListSheet(wb);
   if (!found) throw new Error("Không tìm thấy sheet có cột “Điện thoại” và “Trạng thái” trong " + fileName);
   const header = (found.rows[found.headerRow] || []).map(h => h == null ? "" : String(h));
   const colOf = mapHeader(header);
-  const records = [];
-  found.rows.forEach((row, idx) => {
-    if (idx <= found.headerRow || !row || !row.some(v => v != null && String(v).trim() !== "")) return;
-    records.push(recordFromRow(row, colOf, records.length, idx + 1 + found.start));
-  });
-  const st = {v: STATE_VERSION, fileName, fileSig: sig, fileModified: modified, sheetName: found.name, headerRow: found.headerRow, importedAt: new Date().toISOString(), header, colOf, records};
-  buildWeekMap(st);
-  return st;
+  const dataRows = [];
+  found.rows.forEach((row, idx) => { if (idx > found.headerRow && row && row.some(v => v != null && String(v).trim() !== "")) dataRows.push([row, idx + 1 + found.start]); });
+  const weekCols = buildWeekMap(header, colOf, dataRows.map(([row]) => row[colOf.nam]));
+  const rows = dataRows.map(([row, excelRow]) => recordFromRow(row, colOf, weekCols, excelRow));
+  // file mẫu: giữ các sheet khác, sheet danh sách chỉ còn dòng tiêu đề
+  const tpl = XLSX.read(buf, {type: "array", cellFormula: true, cellNF: true});
+  tpl.Sheets[found.name] = XLSX.utils.aoa_to_sheet([header]);
+  const template = XLSX.write(tpl, {bookType: "xlsx", type: "base64", compression: true});
+  const meta = {fileName, sheetName: found.name, headerRow: found.headerRow, header, colOf, weekCols};
+  return {meta, rows, template};
 }
-async function sha1(buf) {
-  try { return [...new Uint8Array(await crypto.subtle.digest("SHA-1", buf))].map(b => b.toString(16).padStart(2, "0")).join(""); }
-  catch (e) { return "len" + buf.byteLength; } // trình duyệt không hỗ trợ crypto.subtle (http không phải localhost)
-}
-const editCount = st => st ? st.records.filter(r => r._new || r._deleted || r._wkEdited || isEdited(r)).length : 0;
 
-// Nạp file dữ liệu cố định trong thư mục data/ (xem DATA_FILE ở đầu file)
-async function loadDataFile() {
-  setStatus("Đang tải dữ liệu từ " + DATA_FILE + "…");
-  let res;
-  try { res = await fetch(DATA_FILE + "?t=" + Date.now(), {cache: "no-store"}); }
-  catch (e) {
-    setStatus(location.protocol === "file:"
-      ? `Trình duyệt không cho đọc file khi mở trực tiếp index.html. Hãy chạy <code>node tools/server.js</code> trong thư mục web rồi mở <b>http://localhost:8080</b>, hoặc mở bản đã deploy (Vercel / GitHub Pages).`
-      : `Không tải được <code>${esc(DATA_FILE)}</code>: ${esc(e.message)}`, true);
-    return;
-  }
-  if (!res.ok) { setStatus(`Không tìm thấy file dữ liệu <code>${esc(DATA_FILE)}</code> (lỗi ${res.status}). Hãy chép file Excel vào <code>data/Report_CSKH.xlsx</code> rồi chạy <code>node tools/encrypt.js</code>.`, true); return; }
-  const enc = await res.arrayBuffer();
-  let buf; try { buf = await decryptDataFile(enc); }
-  catch (e) { setStatus(esc(e.message && e.message.includes("định dạng") ? e.message : "Không giải mã được dữ liệu — file đã được mã hoá lại bằng khoá khác. Hãy đăng xuất rồi đăng nhập lại."), true); return; }
-  const sig = await sha1(enc), modified = res.headers.get("Last-Modified") || "";
-  let saved = null; try { saved = await loadEnc("state"); } catch (e) { console.warn(e); }
-  origFile = buf;
+// Nạp toàn bộ dữ liệu từ server (theo từng trang)
+async function loadAll() {
+  setStatus("Đang tải dữ liệu khách hàng…");
   try {
-    if (saved && saved.v === STATE_VERSION && saved.fileSig === sig && saved.dataFile === DATA_FILE) { S = saved; S.fileModified = modified || S.fileModified; }
-    else {
-      S = parseWorkbook(buf, "Report_CSKH.xlsx", sig, modified); S.dataFile = DATA_FILE;
-      const n = editCount(saved);
-      if (n) { await saveEnc("prevState", saved); const old = await idb.get("file"); if (old) await idb.set("prevFile", old); }
-      await saveEnc("state", S); await idb.set("file", enc);
+    let offset = 0, meta = null, records = [], serverTime = null, total = 0;
+    for (;;) {
+      const r = await api(`/api/data?offset=${offset}&limit=500`);
+      if (offset === 0) { meta = r.meta; serverTime = r.serverTime; total = r.total; }
+      if (!meta) break;
+      records.push(...r.records);
+      setStatus(`Đang tải dữ liệu khách hàng… ${fmt(records.length)}/${fmt(total)}`);
+      if (r.next == null) break; offset = r.next;
     }
-  } catch (e) { console.error(e); setStatus(esc(e.message || "Không đọc được file Excel."), true); return; }
-  try { const ps = await loadEnc("prevState"); prevNotice = ps ? editCount(ps) : 0; } catch (e) {}
-  yearsInit = false; refreshAll(); showData(true);
+    if (!meta) { S = null; showEmpty(); return; }
+    S = {...meta, records}; lastSync = serverTime;
+    yearsInit = false; refreshAll();
+    clearInterval(syncTimer); syncTimer = setInterval(sync, SYNC_SEC * 1e3);
+  } catch (e) { if (e.status !== 401) setStatus(esc(e.message), true); }
 }
-let prevNotice = 0;
+// Lấy các thay đổi của người khác kể từ lần đồng bộ trước
+async function sync() {
+  if (!S || !lastSync || document.hidden) return;
+  try {
+    const r = await api(`/api/data?since=${encodeURIComponent(lastSync)}`);
+    lastSync = r.serverTime;
+    if (!r.records.length) return;
+    r.records.forEach(upsertLocal);
+    const open = document.querySelector(".drawer"); // không vẽ lại khi đang mở form để khỏi mất nội dung đang nhập
+    computeIssues(); refreshOptions(); if (!open) renderAll(); showData(true);
+    toast(`Đã cập nhật ${r.records.length} thay đổi mới từ người khác`);
+  } catch (e) { console.warn("sync", e); }
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) sync(); });
+
+function showEmpty() {
+  showData(false);
+  const el = $("#statusBox"); el.hidden = false; el.classList.remove("err");
+  el.innerHTML = can.admin()
+    ? `<h2>Chưa có dữ liệu</h2><p>Nhập file Excel CSKH để bắt đầu. Web tự tìm sheet có cột “Điện thoại” và “Trạng thái”.</p><div class="row"><button class="btn primary" id="btnFirstImport">Nhập file Excel</button></div>`
+    : `<h2>Chưa có dữ liệu</h2><p>Admin chưa nhập file Excel vào hệ thống.</p>`;
+  if ($("#btnFirstImport")) $("#btnFirstImport").onclick = () => $("#importFile").click();
+}
 function setStatus(html, isErr) { const el = $("#statusBox"); el.hidden = false; el.classList.toggle("err", !!isErr); el.innerHTML = `<h2>${isErr ? "Chưa tải được dữ liệu" : "Đang tải…"}</h2><p>${html}</p>`; }
+
+// ---- Nhập Excel vào database (admin)
+async function importExcel(file) {
+  if (!can.admin()) return;
+  const bar = $("#importBox");
+  const say = (html, err) => { bar.hidden = false; bar.classList.toggle("err", !!err); bar.innerHTML = html; };
+  try {
+    say(`<span class="sev sev-info">i</span><span>Đang đọc <b>${esc(file.name)}</b>…</span>`);
+    const {meta, rows, template} = parseWorkbook(await file.arrayBuffer(), file.name);
+    const edited = S ? S.records.filter(r => r.version > 1 || r._new).length : 0;
+    const ok = await confirmBox(`Nhập <b>${fmt(rows.length)}</b> khách hàng từ <b>${esc(file.name)}</b> (sheet “${esc(meta.sheetName)}”)?`
+      + (S ? `<br><b>Toàn bộ dữ liệu hiện tại (${fmt(S.records.length)} KH${edited ? `, trong đó ${fmt(edited)} KH đã sửa/thêm trên web` : ""}) sẽ bị thay thế.</b> Nên bấm <b>Xuất Excel</b> để lưu bản hiện tại trước.` : ""), "Nhập và thay thế");
+    if (!ok) { bar.hidden = true; return; }
+    const {importId} = await api("/api/import", {method: "POST", body: {action: "start", meta, template}});
+    const B = 300;
+    for (let i = 0; i < rows.length; i += B) {
+      say(`<span class="sev sev-info">i</span><span>Đang nhập vào database… <b>${fmt(Math.min(i + B, rows.length))}/${fmt(rows.length)}</b></span>`);
+      await api("/api/import", {method: "POST", body: {action: "batch", importId, rows: rows.slice(i, i + B)}});
+    }
+    await api("/api/import", {method: "POST", body: {action: "finish", importId, count: rows.length}});
+    say(`<span class="sev sev-good">✓</span><span>Đã nhập <b>${fmt(rows.length)}</b> khách hàng vào database.</span><button class="btn" id="importClose">Đóng</button>`);
+    $("#importClose").onclick = () => { bar.hidden = true; };
+    await loadAll();
+  } catch (e) { console.error(e); say(`<span class="sev sev-crit">!</span><span>Nhập thất bại: ${esc(e.message)}. Dữ liệu cũ vẫn giữ nguyên.</span><button class="btn" id="importClose">Đóng</button>`, true); $("#importClose").onclick = () => { bar.hidden = true; }; }
+}
+// Hộp xác nhận ngay trên trang (thay cho confirm())
+function confirmBox(html, yes = "Đồng ý") {
+  return new Promise(resolve => {
+    const h = $("#drawerHost");
+    h.innerHTML = `<div class="drawer-bg"></div><div class="modal" role="dialog" aria-modal="true"><p>${html}</p><div class="form-actions"><span class="sp"></span><button class="btn" data-n>Huỷ</button><button class="btn primary" data-y>${esc(yes)}</button></div></div>`;
+    const done = v => { h.innerHTML = ""; resolve(v); };
+    h.querySelector("[data-y]").onclick = () => done(true); h.querySelector("[data-n]").onclick = () => done(false); h.querySelector(".drawer-bg").onclick = () => done(false);
+    h.querySelector("[data-y]").focus();
+  });
+}
 
 // ================= Nhật ký theo tuần =================
 /* Trong Excel, nhật ký tuần nằm ở các cột "Tuần N", xếp theo từng năm từ mới đến cũ:
    [Tuần 27 … Tuần 2] của 2026, [Tuần 53 … Tuần 1] của 2025, …  Tên cột lặp lại giữa các năm,
-   nên web xác định năm của mỗi cột theo thứ tự: số tuần tăng lên = bắt đầu nhóm của năm trước. */
+   nên web xác định năm của mỗi cột theo thứ tự: số tuần tăng lên = bắt đầu nhóm của năm trước.
+   Trong database, nhật ký lưu theo khoá "năm-tuần", ví dụ weekly["2026-22"]. */
 const WEEK_RE = /^tuần\s*(\d+)$/i;
-function buildWeekMap(st) {
-  const core = new Set(Object.values(st.colOf)), years = st.records.map(r => +r.nam).filter(y => y >= 2000 && y < 2100);
+function buildWeekMap(header, colOf, namValues) {
+  const core = new Set(Object.values(colOf)), years = namValues.map(v => +v).filter(y => y >= 2000 && y < 2100);
   const y0 = years.length ? Math.max(...years) : new Date().getFullYear();
   const map = {}; let prev = Infinity, blk = 0;
-  st.header.forEach((h, i) => { const m = String(h || "").trim().match(WEEK_RE); if (!m || core.has(i)) return; const w = +m[1]; if (w > prev) blk++; prev = w; map[i] = {y: y0 - blk, w}; });
-  st.weekCols = map;
+  header.forEach((h, i) => { const m = String(h || "").trim().match(WEEK_RE); if (!m || core.has(i)) return; const w = +m[1]; if (w > prev) blk++; prev = w; map[i] = {y: y0 - blk, w}; });
+  return map;
 }
-// Tìm (hoặc tạo) cột "Tuần w" của năm y; cột mới được chèn đúng vị trí theo thứ tự năm/tuần
-function weekCol(y, w, create) {
-  const hit = Object.entries(S.weekCols || {}).find(([, v]) => v.y === y && v.w === w); if (hit) return +hit[0];
-  if (!create) return -1;
-  const cols = Object.entries(S.weekCols || {}).map(([c, v]) => [+c, v]).sort((a, b) => a[0] - b[0]);
-  let pos = null;
-  for (const [c, v] of cols) if (v.y < y || (v.y === y && v.w < w)) { pos = c; break; }
-  if (pos == null) pos = cols.length ? cols[cols.length - 1][0] + 1 : (S.colOf.nhatKy != null ? S.colOf.nhatKy + 1 : S.header.length);
-  S.header.splice(pos, 0, "Tuần " + w);
-  for (const r of S.records) if (r._raw && r._raw.length > pos) r._raw.splice(pos, 0, null);
-  for (const k in S.colOf) if (S.colOf[k] >= pos) S.colOf[k]++;
-  const nm = {}; for (const [c, v] of Object.entries(S.weekCols || {})) nm[+c >= pos ? +c + 1 : +c] = v; nm[pos] = {y, w}; S.weekCols = nm;
-  return pos;
-}
-function weeklyEntries(r) { // [{col, y, w, text}] mới nhất trước
-  if (!r._raw || !S || !S.weekCols) return [];
-  return Object.entries(S.weekCols).map(([c, v]) => ({col: +c, ...v, raw: r._raw[+c]}))
-    .filter(e => e.raw != null && String(e.raw).trim() !== "")
-    .map(e => ({...e, text: e.raw instanceof Date ? dmy(isoOf(e.raw)) : String(e.raw)}))
+const wkKey = (y, w) => `${y}-${w}`;
+function weeklyEntries(r) { // [{key, y, w, text}] mới nhất trước
+  return Object.entries(r.weekly || {}).filter(([, t]) => t != null && String(t).trim() !== "")
+    .map(([key, t]) => { const [y, w] = key.split("-").map(Number); return {key, y, w, text: String(t)}; })
     .sort((a, b) => b.y - a.y || b.w - a.w);
 }
 const latestNote = r => { const e = weeklyEntries(r)[0]; return e ? `T${e.w}/${e.y}: ${e.text}` : String(r.nhatKy || r.thongTin || ""); };
+const noteYears = () => { const s = new Set([new Date().getFullYear()]); if (S) { Object.values(S.weekCols || {}).forEach(v => s.add(v.y)); all.forEach(r => Object.keys(r.weekly || {}).forEach(k => s.add(+k.split("-")[0]))); } return [...s].sort((a, b) => b - a); };
 
 // ================= Phát hiện vấn đề dữ liệu =================
 let placeholderDates = new Set(), accVariants = {};
@@ -437,9 +434,7 @@ function computeIssues() {
     if (!r.ten) out.push("NO_NAME");
     if (!r.loai) out.push("NO_LOAI");
     if (!r.trangThai) out.push("NO_STATUS");
-    if (tIdx != null && r._raw && r._orig && r.trangThai === r._orig.trangThai) {
-      const raw = r._raw[tIdx]; if (raw != null && String(raw) !== r.trangThai && TT.includes(r.trangThai)) out.push("STATUS_SPELL");
-    }
+    if (r._spell && r.version === 1 && TT.includes(r.trangThai)) out.push("STATUS_SPELL");
     if (r.trangThai === "Kết thúc" && !r.lyDo) out.push("END_NO_REASON");
     if (r.lyDo && r.trangThai && r.trangThai !== "Kết thúc") out.push("REASON_NOT_END");
     if (r.trangThai === "Đã ký HĐ" && !parseMoney(r.giaTri)) out.push("SIGNED_NO_VALUE");
@@ -459,7 +454,7 @@ function computeIssues() {
 }
 // Mô tả cụ thể lỗi của một dòng (giá trị đang có trong Excel)
 function issueDetail(r, c) {
-  const o = r._orig || {}, raw = k => (S && S.colOf[k] != null && r._raw) ? r._raw[S.colOf[k]] : undefined;
+  const raw = k => k === "trangThai" ? r._spell : r[k];
   const show = v => v == null || v === "" ? "(trống)" : v instanceof Date ? dmy(isoOf(v)) : String(v);
   switch (c) {
     case "NO_YEAR": return `Năm trong Excel: ${show(raw("nam") ?? r.nam)}`;
@@ -542,27 +537,26 @@ function issueIns(rs, codes, ctx) { // dòng nhận định chung cho các vấn
 
 // ================= Điều hướng =================
 let view = "overview";
-const VIEWS = ["overview", "list", "check", "add"];
+const VIEWS = ["overview", "list", "check", "add", "users"];
 document.querySelectorAll("nav.tabs button").forEach(b => b.onclick = () => show(b.dataset.view));
 function show(v) {
-  if (v === "add" && !can.edit()) v = "overview";
+  if ((v === "add" && !can.edit()) || (v === "users" && !can.admin())) v = "overview";
   view = v;
   document.querySelectorAll("nav.tabs button").forEach(b => b.setAttribute("aria-selected", b.dataset.view === v));
   if (!S) return;
   VIEWS.forEach(k => $("#view-" + k).hidden = k !== v);
   if (v === "add") mountAddForm();
   if (v === "check") renderCheck();
+  if (v === "users") renderUsers();
 }
 function showData(has) {
   $("#statusBox").hidden = has; $("nav.tabs").hidden = !has;
-  $("#btnExport").disabled = !has; $("#btnClear").disabled = !has || !editCount(S);
-  $("#btnExport").hidden = !can.export(); $("#clearHost").hidden = !can.reset();
+  $("#btnExport").disabled = !has; $("#btnExport").hidden = !can.export();
+  $("#btnImport").hidden = !can.admin();
   document.querySelector('nav.tabs [data-view="add"]').hidden = !can.edit();
-  const pb = $("#prevBox"); pb.hidden = !(has && prevNotice);
-  if (has && prevNotice) pb.innerHTML = `<span class="sev sev-warn">!</span><span>File dữ liệu đã được thay bằng bản mới. Có <b>${fmt(prevNotice)}</b> chỉnh sửa trên web của file cũ chưa xuất Excel — đã được giữ lại để bạn tải về.</span>${can.export() ? '<button class="btn" id="prevExport">Tải bản chỉnh sửa cũ</button>' : ""}<button class="btn" id="prevDrop">Bỏ qua</button>`;
-  if (has && prevNotice) { if ($("#prevExport")) $("#prevExport").onclick = exportPrev; $("#prevDrop").onclick = async () => { prevNotice = 0; await idb.del("prevState"); await idb.del("prevFile"); showData(true); }; }
+  document.querySelector('nav.tabs [data-view="users"]').hidden = !can.admin();
   if (!has) VIEWS.forEach(k => $("#view-" + k).hidden = true); else show(view);
-  $("#srcInfo").textContent = has ? `Dữ liệu: Report_CSKH (đã mã hoá) · sheet “${S.sheetName}”${S.fileModified ? " · file cập nhật " + new Date(S.fileModified).toLocaleString("vi-VN") : ""}${editCount(S) ? " · " + fmt(editCount(S)) + " chỉnh sửa trên web chưa xuất" : ""}` : "Chưa có dữ liệu";
+  $("#srcInfo").textContent = has ? `Database · ${fmt(all.length)} KH · nhập từ “${S.fileName}” lúc ${new Date(S.importedAt).toLocaleString("vi-VN")}${S.importedBy ? " bởi " + S.importedBy : ""}` : (USER ? "Chưa có dữ liệu" : "");
 }
 
 // ================= Bộ lọc =================
@@ -960,7 +954,7 @@ function renderList() {
   $("#pgInfo").textContent = `${fmt(rs.length)} KH · trang ${page + 1}/${pages}`;
   $("#pgPrev").disabled = page === 0; $("#pgNext").disabled = page >= pages - 1;
 }
-const isEdited = r => !!r._wkEdited || (r._orig && CORE.some(([k]) => (r[k] ?? "") !== (r._orig[k] ?? "")));
+const isEdited = r => r.version > 1;
 
 // ================= Kiểm tra dữ liệu =================
 ["#cYear", "#cSev"].forEach(s => $(s).onchange = renderCheck);
@@ -989,10 +983,10 @@ function renderCheck() {
   const years = yearsList();
   const recon = years.map(y => {
     const web = all.filter(r => r.nam === y).length;
-    const excel = all.filter(r => r.nam === y && !r._namDerived && !r._new && !(r._orig && r._orig.nam !== r.nam)).length;
+    const excel = all.filter(r => r.nam === y && !r._namDerived && !r._new).length;
     const derived = all.filter(r => r.nam === y && r._namDerived).length, added = all.filter(r => r.nam === y && r._new).length;
     const spell = all.filter(r => r.nam === y && hasIssue(r, "STATUS_SPELL")).length;
-    return {y, web, excel, derived, added, spell, deleted: S.records.filter(r => r._deleted && r._orig && r._orig.nam === y).length};
+    return {y, web, excel, derived, added, spell, deleted: 0};
   });
   table("#reconcile", [
     {k: "y", label: "Năm"}, {k: "web", label: "Số KH trên web", num: true, html: r => fmt(r.web)},
@@ -1007,29 +1001,41 @@ function renderCheck() {
 // ================= Xuất file Excel =================
 function outValue(r, k) {
   const v = r[k] ?? "";
-  if (r._orig && v === (r._orig[k] ?? "") && r._raw && S.colOf[k] != null && !(k === "nam" && r._namDerived)) return r._raw[S.colOf[k]] ?? null; // không đổi → giữ giá trị gốc
   if (v === "") return null;
   if (k === "ngay") { const d = new Date(v + "T00:00:00"); return isNaN(d) ? v : d; }
   if (NUMERIC_KEYS.has(k) && /^\d+$/.test(v)) return Number(v);
+  if (k === "giaTri" && /^\d+(\.\d+)?$/.test(v)) return Number(v);
   return v;
 }
+// Sheet danh sách: các cột gốc giữ nguyên thứ tự; khối cột "Tuần N" (sắp xếp mới → cũ, gồm cả tuần mới thêm trên web)
+// được đặt đúng chỗ khối tuần trong file gốc.
 function buildListSheet() {
-  const header = S.header.slice();
-  const colOf = {...S.colOf};
-  for (const [k, label] of CORE) if (colOf[k] == null && all.some(r => r[k])) { colOf[k] = header.length; header.push(label); }
-  const aoa = [];
-  for (let i = 0; i < (S.headerRow || 0); i++) aoa.push([]);
+  const orig = S.header || CORE.map(c => c[1]), colOf = S.colOf || {}, weekCols = S.weekCols || {};
+  const wkIdx = Object.keys(weekCols).map(Number), firstWk = wkIdx.length ? Math.min(...wkIdx) : Infinity;
+  const keys = new Set(Object.values(weekCols).map(v => wkKey(v.y, v.w)));
+  all.forEach(r => Object.keys(r.weekly || {}).forEach(k => keys.add(k)));
+  const wk = [...keys].map(k => { const [y, w] = k.split("-").map(Number); return {k, y, w}; }).sort((a, b) => b.y - a.y || b.w - a.w);
+  const header = [], pos = {}; let wkStart = -1;
+  const putWeeks = () => { wkStart = header.length; wk.forEach(x => header.push("Tuần " + x.w)); };
+  orig.forEach((h, i) => { if (i === firstWk) putWeeks(); if (!weekCols[i]) { pos[i] = header.length; header.push(h); } });
+  if (wkStart < 0) putWeeks();
+  const newCol = {}; for (const [k, i] of Object.entries(colOf)) if (pos[i] != null) newCol[k] = pos[i];
+  for (const [k, label] of CORE) if (newCol[k] == null && all.some(r => r[k])) { newCol[k] = header.length; header.push(label); }
+  const isWk = i => i >= wkStart && i < wkStart + wk.length;
+  const aoa = []; for (let i = 0; i < (S.headerRow || 0); i++) aoa.push([]);
   aoa.push(header);
   for (const r of all) {
-    const row = (r._raw || []).slice(); while (row.length < header.length) row.push(null);
-    for (const [k] of CORE) if (colOf[k] != null) row[colOf[k]] = outValue(r, k);
+    const row = new Array(header.length).fill(null);
+    for (const [i, v] of Object.entries(r.extra || {})) if (pos[+i] != null) row[pos[+i]] = v && typeof v === "object" && v.d ? new Date(v.d + "T00:00:00") : v;
+    for (const [k] of CORE) if (newCol[k] != null) row[newCol[k]] = outValue(r, k);
+    wk.forEach((x, j) => { const t = r.weekly && r.weekly[x.k]; if (t) row[wkStart + j] = t; });
     aoa.push(row);
   }
   const dateCells = [];
   aoa.forEach((row, R) => row.forEach((v, C) => { if (v instanceof Date) { row[C] = dateToSerial(v); dateCells.push([R, C]); } }));
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   for (const [R, C] of dateCells) { const c = ws[XLSX.utils.encode_cell({r: R, c: C})]; if (c) { c.t = "n"; c.z = "d/m/yyyy"; } }
-  ws["!cols"] = header.map((h, i) => ({wch: i === colOf.thongTin || i === colOf.nhatKy ? 50 : Math.min(28, Math.max(8, String(h).length + 2))}));
+  ws["!cols"] = header.map((h, i) => ({wch: i === newCol.thongTin || i === newCol.nhatKy ? 50 : isWk(i) ? 30 : Math.min(28, Math.max(8, String(h).length + 2))}));
   return ws;
 }
 function buildStatsSheet() {
@@ -1072,7 +1078,9 @@ async function exportExcel(suffix = "") {
   if (!S) return;
   if (!can.export()) { toast("Tài khoản của bạn không có quyền xuất file"); return; }
   try {
-    const wb = origFile ? XLSX.read(origFile, {type: "array", cellFormula: true, cellNF: true}) : XLSX.utils.book_new();
+    toast("Đang tạo file Excel…");
+    const {template} = await api("/api/template");
+    const wb = template ? XLSX.read(template, {type: "base64", cellFormula: true, cellNF: true}) : XLSX.utils.book_new();
     putSheet(wb, S.sheetName, buildListSheet());
     putSheet(wb, "Thống kê (web)", buildStatsSheet());
     putSheet(wb, "Kiểm tra dữ liệu (web)", buildIssueSheet());
@@ -1081,7 +1089,7 @@ async function exportExcel(suffix = "") {
     const base = (S.fileName || "CSKH").replace(/\.(xlsx|xlsm|xls)$/i, "");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([out], {type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}));
-    a.download = `${base}_cap-nhat_${isoOf(new Date())}${suffix}.xlsx`;
+    a.download = `${base}_${isoOf(new Date())}${suffix}.xlsx`;
     document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
     toast(`Đã xuất ${fmt(all.length)} khách hàng ra file Excel`);
   } catch (e) { console.error(e); toast("Xuất file thất bại: " + (e.message || e)); }
@@ -1145,7 +1153,7 @@ function buildForm(rec, {isEdit, onDone}) {
   // Chọn Năm + Tuần (mặc định tuần hiện tại); tuần nào của KH đã có nhật ký thì đánh dấu ✓
   const now = new Date(), curY = now.getFullYear(), curW = weekNum(now);
   const has = (y, w) => weeklyEntries(r).some(e => e.y === y && e.w === w);
-  const wkYears = [...new Set([curY, ...Object.values(S.weekCols || {}).map(v => v.y)])].sort((a, b) => b - a);
+  const wkYears = noteYears();
   E("_wkYear").innerHTML = wkYears.map(y => `<option value="${y}">${y}</option>`).join("");
   E("_wkYear").value = curY;
   const wkLabel = form.querySelector("[data-wk-label]");
@@ -1164,7 +1172,7 @@ function buildForm(rec, {isEdit, onDone}) {
   const byYear = []; entries.forEach(e => { const g = byYear.find(x => x.y === e.y); g ? g.list.push(e) : byYear.push({y: e.y, list: [e]}); });
   wh.innerHTML = entries.length
     ? `<div class="wk-head">Nhật ký các tuần trước <span class="muted">(${entries.length} tuần · sửa trực tiếp, xoá hết chữ để xoá)</span></div>
-       <div class="wk-list"><div class="wk-row wk-cols"><span>Tuần</span><span>Nội dung</span></div>${byYear.map(g => `<div class="wk-year">Năm ${g.y}</div>${g.list.map(e => `<div class="wk-row"><label for="${pre}wk${e.col}" title="Tuần ${e.w}/${e.y}">${e.w}</label><textarea class="autosize" id="${pre}wk${e.col}" name="_wkc_${e.col}" rows="1">${esc(e.text)}</textarea></div>`).join("")}`).join("")}</div>`
+       <div class="wk-list"><div class="wk-row wk-cols"><span>Tuần</span><span>Nội dung</span></div>${byYear.map(g => `<div class="wk-year">Năm ${g.y}</div>${g.list.map(e => `<div class="wk-row"><label for="${pre}wk${e.y}_${e.w}" title="Tuần ${e.w}/${e.y}">${e.w}</label><textarea class="autosize" id="${pre}wk${e.y}_${e.w}" name="_wkc_${e.key}" rows="1">${esc(e.text)}</textarea></div>`).join("")}`).join("")}</div>`
     : `<div class="wk-head muted">Chưa có nhật ký tuần nào.</div>`;
   form.addEventListener("input", e => { if (e.target.classList && e.target.classList.contains("autosize")) autosize(e.target); });
   const msg = form.querySelector("[data-msg]");
@@ -1183,45 +1191,51 @@ function buildForm(rec, {isEdit, onDone}) {
       host.firstChild.onclick = () => {
         host.innerHTML = `<span class="confirm">Xoá khách hàng này?<button type="button" class="btn danger" data-y>Xoá</button><button type="button" class="btn" data-n>Không</button></span>`;
         host.querySelector("[data-n]").onclick = buildDel;
-        host.querySelector("[data-y]").onclick = () => { if (!can.del()) return; const t = S.records.find(x => x.id === r.id); if (t) t._deleted = true; persist(); refreshAll(); toast("Đã xoá khách hàng (sẽ không có trong file xuất)"); onDone(true); };
+        host.querySelector("[data-y]").onclick = async () => {
+          if (!can.del()) return;
+          try { const res = await api(`/api/record?id=${r.id}`, {method: "DELETE", body: {version: r.version}}); upsertLocal(res.record); refreshAll(); toast("Đã xoá khách hàng"); onDone(true); }
+          catch (e) { msg.textContent = e.message; if (e.data && e.data.record) { upsertLocal(e.data.record); refreshAll(); } }
+        };
       };
     };
     buildDel();
   }
-  form.onsubmit = ev => {
+  form.onsubmit = async ev => {
     ev.preventDefault(); msg.textContent = "";
     if (!can.edit()) { msg.textContent = "Tài khoản của bạn không có quyền sửa dữ liệu"; return; }
     const miss = [...form.elements].filter(el => el.required && !String(el.value).trim());
     if (miss.length) { msg.textContent = "Còn thiếu: " + miss.map(el => form.querySelector(`label[for=${el.id}]`).textContent.replace("*", "").trim()).join(", "); miss[0].focus(); return; }
-    const out = isEdit ? S.records.find(x => x.id === r.id) : {id: newId(), _new: true};
+    const base = isEdit ? S.records.find(x => x.id === r.id) : null;
+    const data = base ? JSON.parse(JSON.stringify(base)) : {};
+    for (const k of ["id", "version", "deleted", "updatedAt", "updatedBy", "createdAt"]) delete data[k];
     for (const el of form.elements) {
       if (!el.name || el.name.startsWith("_")) continue;
-      const v = String(el.value).trim(); if (v) out[el.name] = v; else delete out[el.name];
+      const v = String(el.value).trim(); if (v) data[el.name] = v; else delete data[el.name];
     }
-    const d = new Date(out.ngay + "T00:00:00");
-    if (!isNaN(d)) { out.nam = String(d.getFullYear()); out.thang = String(d.getMonth() + 1); out.tuan = String(weekNum(d)); out._namDerived = false; }
-    if (!out.kv && kvOf(out.tinh)) out.kv = kvOf(out.tinh);
-    out.updatedAt = new Date().toISOString();
-    if (!isEdit) S.records.push(out);
-    // 1) sửa / xoá nhật ký các tuần đã có (làm trước khi có thể chèn cột mới)
-    out._raw ||= [];
+    const d = new Date(data.ngay + "T00:00:00");
+    if (!isNaN(d)) { data.nam = String(d.getFullYear()); data.thang = String(d.getMonth() + 1); data.tuan = String(weekNum(d)); delete data._namDerived; }
+    if (!data.kv && kvOf(data.tinh)) data.kv = kvOf(data.tinh);
+    // nhật ký tuần: sửa/xoá các tuần đã có + thêm nội dung cho tuần được chọn
+    data.weekly ||= {};
     for (const el of form.elements) {
-      const m = el.name && el.name.match(/^_wkc_(\d+)$/); if (!m) continue;
-      const c = +m[1], old = out._raw[c] == null ? "" : String(out._raw[c] instanceof Date ? dmy(isoOf(out._raw[c])) : out._raw[c]), v = el.value.trim();
-      if (v !== old.trim()) { while (out._raw.length <= c) out._raw.push(null); out._raw[c] = v || null; out._wkEdited = true; }
+      const m = el.name && el.name.match(/^_wkc_(\d{4}-\d{1,2})$/); if (!m) continue;
+      const v = el.value.trim(), old = String(data.weekly[m[1]] ?? "").trim();
+      if (v !== old) { if (v) data.weekly[m[1]] = v; else delete data.weekly[m[1]]; }
     }
-    // 2) thêm nhật ký cho tuần được chọn
     const wkNote = E("_wkNote").value.trim(), wy = +E("_wkYear").value, ww = +E("_wkWeek").value;
-    if (wkNote && wy && ww) {
-      const col = weekCol(wy, ww, true);
-      while (out._raw.length <= col) out._raw.push(null);
-      const line = wkNote, cur = out._raw[col];
-      out._raw[col] = cur != null && String(cur).trim() ? String(cur).trim() + "\n" + line : line;
-      out._wkEdited = true;
+    if (wkNote && wy && ww) { const k = wkKey(wy, ww), cur = String(data.weekly[k] ?? "").trim(); data.weekly[k] = cur ? cur + "\n" + wkNote : wkNote; }
+    if (!Object.keys(data.weekly).length) delete data.weekly;
+    const btn = form.querySelector("[data-save]"); btn.disabled = true; btn.textContent = "Đang lưu…";
+    try {
+      const res = isEdit ? await api(`/api/record?id=${r.id}`, {method: "PUT", body: {data, version: base.version}})
+                         : await api("/api/record", {method: "POST", body: {data}});
+      upsertLocal(res.record); refreshAll(); if (view === "check") renderCheck();
+      toast(res.unchanged ? "Không có gì thay đổi" : isEdit ? "Đã lưu thay đổi" : "Đã thêm khách hàng " + (data.ten || data.sdt));
+      onDone(true);
+    } catch (e) {
+      if (e.status === 409 && e.data && e.data.record) { upsertLocal(e.data.record); refreshAll(); }
+      msg.textContent = e.message; btn.disabled = false; btn.textContent = "Lưu khách hàng";
     }
-    persist(); refreshAll(); if (view === "check") renderCheck();
-    toast(isEdit ? "Đã lưu thay đổi" : "Đã thêm khách hàng " + (out.ten || out.sdt));
-    onDone(true);
   };
   return form;
 }
@@ -1235,13 +1249,30 @@ function mountAddForm() {
 function openEdit(id) {
   const r = all.find(x => x.id === id); if (!r) return;
   const host = $("#drawerHost");
-  host.innerHTML = `<div class="drawer-bg"></div><aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="dTitle"><div class="drawer-head"><h2 id="dTitle">${esc(r.ten || r.sdt || "Khách hàng")}</h2><span class="muted" style="font-size:12px">${r._new ? "Nhập trên web" : "Từ file Excel" + (r._row ? " · dòng " + r._row : "")}</span><button class="btn" data-x aria-label="Đóng">✕</button></div></aside>`;
+  host.innerHTML = `<div class="drawer-bg"></div><aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="dTitle"><div class="drawer-head"><h2 id="dTitle">${esc(r.ten || r.sdt || "Khách hàng")}</h2><span class="muted" style="font-size:12px">${r._new ? "Thêm trên web" : "Từ file Excel" + (r._row ? " · dòng " + r._row : "")}${r.version > 1 && r.updatedBy ? ` · sửa lần cuối: ${esc(r.updatedBy)}, ${new Date(r.updatedAt).toLocaleString("vi-VN")}` : ""}</span><button class="btn" data-x aria-label="Đóng">✕</button></div></aside>`;
   const close = () => { host.innerHTML = ""; document.removeEventListener("keydown", esck); };
   const esck = e => { if (e.key === "Escape") close(); };
   document.addEventListener("keydown", esck);
   host.querySelector(".drawer-bg").onclick = close; host.querySelector("[data-x]").onclick = close;
   host.querySelector(".drawer").appendChild(buildForm(r, {isEdit: true, onDone: close}));
+  host.querySelector(".drawer").insertAdjacentHTML("beforeend", `<div class="hist-box"><button class="btn" data-hist>Xem lịch sử chỉnh sửa</button><div data-hist-list></div></div>`);
+  host.querySelector("[data-hist]").onclick = () => loadHistory(r, host.querySelector("[data-hist-list]"), host.querySelector("[data-hist]"));
   autosizeAll(host);
+}
+
+// Lịch sử chỉnh sửa của một KH
+const FIELD_LABEL = Object.fromEntries(CORE.map(([k, l]) => [k, l]));
+function fieldLabel(k) { if (k.startsWith("weekly.")) { const [y, w] = k.slice(7).split("-"); return `Nhật ký tuần ${w}/${y}`; } if (k.startsWith("extra.")) return "Cột " + ((S.header || [])[+k.slice(6)] || k.slice(6)); return FIELD_LABEL[k] || k; }
+const showVal = v => v == null || v === "" ? "(trống)" : String(typeof v === "object" ? JSON.stringify(v) : v).slice(0, 160);
+async function loadHistory(r, box, btn) {
+  btn.disabled = true; btn.textContent = "Đang tải…";
+  try {
+    const {history} = await api(`/api/record?id=${r.id}&history=1`);
+    const ACT = {create: "Thêm mới", update: "Sửa", delete: "Xoá"};
+    box.innerHTML = history.length ? `<h3 class="hist-title">Lịch sử chỉnh sửa (${history.length})</h3>` + history.map(h => `<div class="hist-item"><div class="hist-meta"><b>${esc(h.by_user || "?")}</b> · ${ACT[h.action] || h.action} · ${new Date(h.at).toLocaleString("vi-VN")}</div>${Object.entries(h.diff || {}).filter(([k]) => !k.startsWith("_")).map(([k, [a, b]]) => `<div class="hist-diff"><span>${esc(fieldLabel(k))}</span><div><del>${esc(showVal(a))}</del> → <ins>${esc(showVal(b))}</ins></div></div>`).join("")}</div>`).join("")
+      : `<p class="muted">Chưa có chỉnh sửa nào kể từ khi nhập file Excel.</p>`;
+    btn.remove();
+  } catch (e) { box.innerHTML = `<p class="warn">${esc(e.message)}</p>`; btn.disabled = false; btn.textContent = "Xem lịch sử chỉnh sửa"; }
 }
 
 // ================= Chung =================
@@ -1256,29 +1287,81 @@ document.addEventListener("mousemove", e => {
 });
 function renderAll() { if (!S) return; renderOverview(); renderList(); if (view === "check") renderCheck(); }
 
-// Xuất / bỏ chỉnh sửa
+// ================= Thanh công cụ =================
 $("#btnExport").onclick = () => exportExcel();
-async function exportPrev() { // xuất các chỉnh sửa của file dữ liệu cũ
-  const ps = await loadEnc("prevState"), pfEnc = await idb.get("prevFile"); if (!ps) return;
-  let pf = null; try { pf = pfEnc ? await decryptDataFile(pfEnc) : null; } catch (e) {}
-  const keep = [S, all, origFile, issueMap]; S = ps; origFile = pf || null; all = S.records.filter(r => !r._deleted); computeIssues();
-  try { await exportExcel("_ban-cu"); } finally { [S, all, origFile, issueMap] = keep; computeIssues(); }
-}
-function bindClear() {
-  $("#btnClear").onclick = () => {
-    const host = $("#clearHost");
-    host.innerHTML = `<span class="inline-confirm">Bỏ ${fmt(editCount(S))} chỉnh sửa, quay về đúng file Excel?<button class="btn danger" id="cY">Bỏ chỉnh sửa</button><button class="btn" id="cN">Không</button></span>`;
-    const restore = () => { host.innerHTML = `<button class="btn danger" id="btnClear">Bỏ chỉnh sửa</button>`; bindClear(); showData(!!S); };
-    $("#cN").onclick = restore;
-    $("#cY").onclick = async () => { if (!can.reset()) return; await idb.del("state"); restore(); await loadDataFile(); toast("Đã quay về dữ liệu gốc trong file Excel"); };
-  };
-}
-bindClear();
-window.addEventListener("beforeunload", () => { if (S && SESSION) { clearTimeout(saveT); saveEnc("state", S); } });
+$("#btnImport").onclick = () => $("#importFile").click();
+$("#importFile").onchange = e => { const f = e.target.files[0]; e.target.value = ""; if (f) importExcel(f); };
 
-// Khởi động: nạp lại dữ liệu đã lưu trong trình duyệt
+// ================= Tài khoản & hệ thống (admin) =================
+const bytes = n => n >= 1073741824 ? (n / 1073741824).toLocaleString("vi-VN", {maximumFractionDigits: 2}) + " GB" : n >= 1048576 ? (n / 1048576).toLocaleString("vi-VN", {maximumFractionDigits: 1}) + " MB" : Math.round(n / 1024) + " KB";
+let usersCache = [];
+async function renderUsers() {
+  if (!can.admin()) return;
+  try {
+    const {users} = await api("/api/users"); usersCache = users;
+    table("#tbUsers", [
+      {k: "username", label: "Tên đăng nhập", html: u => `<b>${esc(u.username)}</b>${u.id === USER.id ? ' <span class="tag">bạn</span>' : ""}`},
+      {k: "role", label: "Quyền", html: u => `<select class="ctl" data-act="role" data-id="${u.id}" ${u.id === USER.id ? "disabled" : ""}>${["admin", "editor", "viewer"].map(r => `<option value="${r}" ${r === u.role ? "selected" : ""}>${ROLE_LABEL[r]}</option>`).join("")}</select>`},
+      {k: "active", label: "Trạng thái", val: u => u.active ? 1 : 0, html: u => u.active ? '<span class="chip" data-s="Đã ký HĐ">Đang dùng</span>' : '<span class="chip">Đã khoá</span>'},
+      {k: "last_login", label: "Đăng nhập gần nhất", html: u => u.last_login ? new Date(u.last_login).toLocaleString("vi-VN") : "—"},
+      {k: "x", label: "", html: u => u.id === USER.id ? "" : `<button class="btn" data-act="reset" data-id="${u.id}">Đặt lại mật khẩu</button> <button class="btn ${u.active ? "danger" : ""}" data-act="active" data-id="${u.id}">${u.active ? "Khoá" : "Mở khoá"}</button>`},
+    ], users, {def: {k: "role", dir: "asc"}});
+  } catch (e) { $("#tbUsers").innerHTML = `<p class="warn">${esc(e.message)}</p>`; }
+  renderStorage();
+}
+function showSecret(username, password) {
+  $("#userSecret").hidden = false;
+  $("#userSecret").innerHTML = `<span class="sev sev-warn">!</span><span>Mật khẩu của <b>${esc(username)}</b>: <code id="pwVal">${esc(password)}</code> — chỉ hiện <b>một lần</b>, hãy gửi riêng cho người dùng.</span><button class="btn" id="pwCopy">Sao chép</button><button class="btn" id="pwHide">Đã lưu</button>`;
+  $("#pwCopy").onclick = async () => { try { await navigator.clipboard.writeText(password); toast("Đã sao chép mật khẩu"); } catch (e) { const r = document.createRange(); r.selectNodeContents($("#pwVal")); getSelection().removeAllRanges(); getSelection().addRange(r); } };
+  $("#pwHide").onclick = () => { $("#userSecret").hidden = true; $("#userSecret").innerHTML = ""; };
+}
+$("#tbUsers").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-act]"); if (!b) return;
+  const u = usersCache.find(x => x.id === +b.dataset.id); if (!u) return;
+  try {
+    if (b.dataset.act === "reset") {
+      if (!await confirmBox(`Đặt lại mật khẩu cho <b>${esc(u.username)}</b>? Mật khẩu cũ sẽ không dùng được nữa.`, "Đặt lại")) return;
+      const r = await api("/api/users", {method: "PUT", body: {id: u.id, reset: true}}); showSecret(r.username, r.password);
+    } else if (b.dataset.act === "active") {
+      await api("/api/users", {method: "PUT", body: {id: u.id, active: !u.active}}); toast(u.active ? "Đã khoá tài khoản " + u.username : "Đã mở khoá " + u.username);
+    }
+    renderUsers();
+  } catch (err) { toast(err.message); }
+});
+$("#tbUsers").addEventListener("change", async e => {
+  const s = e.target.closest("select[data-act=role]"); if (!s) return;
+  try { await api("/api/users", {method: "PUT", body: {id: +s.dataset.id, role: s.value}}); toast("Đã đổi quyền"); } catch (err) { toast(err.message); }
+  renderUsers();
+});
+$("#userForm").onsubmit = async e => {
+  e.preventDefault();
+  const username = $("#nuName").value.trim(), role = $("#nuRole").value, m = $("#nuMsg"); m.textContent = "";
+  try { const r = await api("/api/users", {method: "POST", body: {username, role}}); $("#nuName").value = ""; showSecret(r.username, r.password); renderUsers(); }
+  catch (err) { m.textContent = err.message; }
+};
+async function renderStorage() {
+  try {
+    const s = await api("/api/stats"), p = s.dbBytes / s.limitBytes * 100;
+    $("#storageBox").innerHTML = `
+      <div class="meter"><div class="meter-fill ${p > 80 ? "hi" : ""}" style="width:${Math.min(100, Math.max(1, p))}%"></div></div>
+      <p class="muted" style="margin:6px 0 12px">Đã dùng <b>${bytes(s.dbBytes)}</b> / ${bytes(s.limitBytes)} (${pctS(p)})</p>
+      <div class="kpis" style="margin-bottom:12px">
+        <div class="kpi"><div class="l">Khách hàng</div><div class="v">${fmt(s.customers)}</div><div class="s">${bytes(s.tables.customers)}</div></div>
+        <div class="kpi"><div class="l">Lịch sử chỉnh sửa</div><div class="v">${fmt(s.changes)}</div><div class="s">${bytes(s.tables.changes)}${s.oldestChange ? " · từ " + new Date(s.oldestChange).toLocaleDateString("vi-VN") : ""}</div></div>
+        <div class="kpi"><div class="l">Ước tính còn chứa được</div><div class="v">${s.customers ? fmt(Math.max(0, Math.floor((s.limitBytes - s.dbBytes) / Math.max(1, s.tables.customers / s.customers)))) : "—"}</div><div class="s">khách hàng nữa</div></div>
+      </div>
+      <div class="row-inline">Xoá lịch sử chỉnh sửa cũ hơn <select class="ctl" id="pruneM"><option value="12">12 tháng</option><option value="24" selected>24 tháng</option><option value="36">36 tháng</option></select> <button class="btn" id="pruneBtn">Dọn dẹp</button></div>`;
+    $("#pruneBtn").onclick = async () => {
+      const m = +$("#pruneM").value;
+      if (!await confirmBox(`Xoá lịch sử chỉnh sửa cũ hơn <b>${m} tháng</b>? Dữ liệu khách hàng không bị ảnh hưởng.`, "Xoá lịch sử cũ")) return;
+      try { const r = await api("/api/stats", {method: "POST", body: {months: m}}); toast(`Đã xoá ${fmt(r.removed)} dòng lịch sử`); renderStorage(); } catch (e) { toast(e.message); }
+    };
+  } catch (e) { $("#storageBox").innerHTML = `<p class="warn">${esc(e.message)}</p>`; }
+}
+
+// ================= Khởi động =================
 showData(false);
 (async () => {
-  if (!window.crypto || !crypto.subtle) { setStatus("Trình duyệt tắt chức năng mã hoá vì trang không chạy qua HTTPS. Hãy mở bằng <b>https://</b> (GitHub Pages) hoặc <b>http://localhost:8080</b>.", true); return; }
-  if (await restoreSession()) afterLogin(); else showLogin();
+  try { const r = await api("/api/me"); USER = r.user; afterLogin(); }
+  catch (e) { if (e.status === 401) showLogin(); else setStatus(esc(e.message) + (location.protocol === "file:" ? "<br>Hãy chạy <code>npm install</code> rồi <code>node tools/server.js</code> và mở http://localhost:8080" : ""), true); }
 })();
