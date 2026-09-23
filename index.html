@@ -126,8 +126,10 @@
   <div class="f"><label for="F_dlChuyen">Đại lý được chuyển KH</label><input id="F_dlChuyen" name="dlChuyen" list="dlDL" autocomplete="off"></div>
   <div class="f w12"><label for="F_thongTin">Thông tin tiếp nhận</label><textarea id="F_thongTin" name="thongTin"></textarea></div>
   <div class="fs-title">Nhật ký chăm sóc theo tuần</div>
-  <div class="f w3"><label for="F_wkWeek">Tuần / Năm</label><div class="wk-pick"><select id="F_wkWeek" name="_wkWeek" aria-label="Tuần"></select><select id="F_wkYear" name="_wkYear" aria-label="Năm"></select></div><span class="hint" data-wk-label></span></div>
-  <div class="f w9"><label for="F_wkNote">Nội dung chăm sóc</label><textarea id="F_wkNote" name="_wkNote" rows="2" placeholder="VD: Gọi lại, KH hẹn tuần sau gửi bản vẽ"></textarea><span class="hint">Được lưu vào cột “Tuần N” của đúng năm trong Excel. Tuần đã có nhật ký thì ghi nối tiếp.</span></div>
+  <div class="f w3"><label for="F_wkWeek">Tuần</label><select id="F_wkWeek" name="_wkWeek"></select></div>
+  <div class="f w3"><label for="F_wkYear">Năm</label><select id="F_wkYear" name="_wkYear"></select></div>
+  <div class="f w6 wk-status"><span class="hint" data-wk-label></span></div>
+  <div class="f w12"><label for="F_wkNote">Nội dung chăm sóc</label><textarea id="F_wkNote" name="_wkNote" rows="2" placeholder="VD: Gọi lại, KH hẹn tuần sau gửi bản vẽ"></textarea><span class="hint">Được lưu vào cột “Tuần N” của đúng năm trong Excel. Tuần đã có nhật ký thì ghi nối tiếp.</span></div>
   <div class="weeks" data-weeks></div>
   <div class="f w12"><label for="F_nhatKy">Nhật ký tổng hợp <span class="muted">(cột “Nhật ký”)</span></label><textarea id="F_nhatKy" name="nhatKy"></textarea></div>
   <div class="form-actions">

@@ -1152,7 +1152,7 @@ function buildForm(rec, {isEdit, onDone}) {
   const fillWeeks = keep => {
     const y = +E("_wkYear").value, maxW = weekNum(new Date(y, 11, 31)), lastW = y === curY ? curW : maxW;
     E("_wkWeek").innerHTML = Array.from({length: lastW}, (_, i) => lastW - i)
-      .map(w => `<option value="${w}">Tuần ${w}${has(y, w) ? " ✓" : ""}</option>`).join("");
+      .map(w => `<option value="${w}">${w}${has(y, w) ? "  ✓ đã có" : ""}</option>`).join("");
     E("_wkWeek").value = keep && +keep <= lastW ? keep : lastW;
     updWk();
   };
@@ -1161,9 +1161,12 @@ function buildForm(rec, {isEdit, onDone}) {
   E("_wkYear").onchange = () => fillWeeks(E("_wkWeek").value); E("_wkWeek").onchange = updWk;
   fillWeeks(curW);
   const entries = weeklyEntries(r), wh = form.querySelector("[data-weeks]");
+  const byYear = []; entries.forEach(e => { const g = byYear.find(x => x.y === e.y); g ? g.list.push(e) : byYear.push({y: e.y, list: [e]}); });
   wh.innerHTML = entries.length
-    ? `<div class="wk-head">Nhật ký các tuần trước <span class="muted">(${entries.length} tuần · sửa trực tiếp, xoá hết chữ để xoá)</span></div><div class="wk-list">${entries.map(e => `<div class="wk-row"><label for="${pre}wk${e.col}">Tuần ${e.w}/${e.y}</label><textarea id="${pre}wk${e.col}" name="_wkc_${e.col}" rows="${Math.min(5, Math.max(e.text.split("\n").length, Math.ceil(e.text.length / 90)))}">${esc(e.text)}</textarea></div>`).join("")}</div>`
+    ? `<div class="wk-head">Nhật ký các tuần trước <span class="muted">(${entries.length} tuần · sửa trực tiếp, xoá hết chữ để xoá)</span></div>
+       <div class="wk-list"><div class="wk-row wk-cols"><span>Tuần</span><span>Nội dung</span></div>${byYear.map(g => `<div class="wk-year">Năm ${g.y}</div>${g.list.map(e => `<div class="wk-row"><label for="${pre}wk${e.col}" title="Tuần ${e.w}/${e.y}">${e.w}</label><textarea class="autosize" id="${pre}wk${e.col}" name="_wkc_${e.col}" rows="1">${esc(e.text)}</textarea></div>`).join("")}`).join("")}</div>`
     : `<div class="wk-head muted">Chưa có nhật ký tuần nào.</div>`;
+  form.addEventListener("input", e => { if (e.target.classList && e.target.classList.contains("autosize")) autosize(e.target); });
   const msg = form.querySelector("[data-msg]");
   const cancel = form.querySelector("[data-cancel]");
   cancel.onclick = () => onDone(false);
@@ -1222,6 +1225,9 @@ function buildForm(rec, {isEdit, onDone}) {
   };
   return form;
 }
+// Ô chữ tự giãn theo nội dung (gọi sau khi form đã gắn vào trang)
+function autosize(el) { el.style.height = "auto"; el.style.height = el.scrollHeight + 2 + "px"; }
+const autosizeAll = root => root.querySelectorAll("textarea.autosize").forEach(autosize);
 function mountAddForm() {
   const host = $("#addFormHost"); if (host.firstChild) return;
   host.appendChild(buildForm(null, {isEdit: false, onDone: ok => { host.innerHTML = ""; mountAddForm(); if (ok) { resetListFilters(); page = 0; renderList(); show("list"); } }}));
@@ -1235,6 +1241,7 @@ function openEdit(id) {
   document.addEventListener("keydown", esck);
   host.querySelector(".drawer-bg").onclick = close; host.querySelector("[data-x]").onclick = close;
   host.querySelector(".drawer").appendChild(buildForm(r, {isEdit: true, onDone: close}));
+  autosizeAll(host);
 }
 
 // ================= Chung =================

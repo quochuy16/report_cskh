@@ -209,12 +209,15 @@ td.flag{color:var(--warn-ink)}
 .weeks{grid-column:span 12;display:flex;flex-direction:column;gap:8px}
 .wk-head{font-size:12px;font-weight:600;color:var(--ink-2)}
 .wk-head .muted{font-weight:400}
-.wk-list{display:flex;flex-direction:column;gap:6px;max-height:340px;overflow-y:auto;padding-right:4px}
-.wk-row{display:grid;grid-template-columns:130px 1fr;gap:10px;align-items:start}
-.wk-row label{font-size:12px;font-weight:600;color:var(--ink);padding-top:7px;display:flex;flex-direction:column}
-.wk-row label small{font-weight:400;color:var(--muted);font-size:11px}
-.wk-row textarea{border:1px solid var(--line-2);background:var(--surface);border-radius:8px;padding:6px 10px;width:100%;resize:vertical;font-size:13px}
-@media (max-width:760px){.wk-row{grid-template-columns:1fr;gap:2px}.wk-row label{padding-top:0;flex-direction:row;gap:8px;align-items:baseline}}
-.wk-pick{display:flex;gap:6px}
-.wk-pick select:first-child{flex:1;min-width:0}
-.wk-pick select:last-child{width:auto;flex:none}
+.wk-list{display:flex;flex-direction:column;gap:6px;max-height:460px;overflow-y:auto;padding-right:6px}
+.wk-row{display:grid;grid-template-columns:44px 1fr;gap:10px;align-items:start}
+.wk-row label{font-size:13px;font-weight:600;color:var(--ink);padding-top:7px;text-align:right;font-variant-numeric:tabular-nums}
+.wk-row textarea{border:1px solid var(--line-2);background:var(--surface);border-radius:8px;padding:6px 10px;width:100%;resize:vertical;font-size:13px;line-height:1.5;overflow:hidden;min-height:34px;white-space:pre-wrap}
+.wk-year{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-top:6px;padding-bottom:2px;border-bottom:1px solid var(--line)}
+.wk-year:first-child{margin-top:0}
+@media (max-width:760px){.wk-row{grid-template-columns:32px 1fr;gap:8px}}
+.wk-status{justify-content:flex-end;padding-bottom:9px}
+.wk-status .hint{font-size:12px}
+@media (max-width:760px){.wk-status{padding-bottom:0}}
+.wk-cols{font-size:11px;color:var(--muted);font-weight:600;position:sticky;top:0;background:var(--bg);z-index:1;padding-bottom:2px}
+.wk-cols span:first-child{text-align:right}
