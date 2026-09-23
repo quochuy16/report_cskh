@@ -215,3 +215,6 @@ td.flag{color:var(--warn-ink)}
 .wk-row label small{font-weight:400;color:var(--muted);font-size:11px}
 .wk-row textarea{border:1px solid var(--line-2);background:var(--surface);border-radius:8px;padding:6px 10px;width:100%;resize:vertical;font-size:13px}
 @media (max-width:760px){.wk-row{grid-template-columns:1fr;gap:2px}.wk-row label{padding-top:0;flex-direction:row;gap:8px;align-items:baseline}}
+.wk-pick{display:flex;gap:6px}
+.wk-pick select:first-child{flex:1;min-width:0}
+.wk-pick select:last-child{width:auto;flex:none}

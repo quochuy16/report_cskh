@@ -385,11 +385,6 @@ function buildWeekMap(st) {
   st.header.forEach((h, i) => { const m = String(h || "").trim().match(WEEK_RE); if (!m || core.has(i)) return; const w = +m[1]; if (w > prev) blk++; prev = w; map[i] = {y: y0 - blk, w}; });
   st.weekCols = map;
 }
-function weekRange(y, w) { // tuần bắt đầu Chủ nhật, tuần 1 chứa ngày 1/1 (giống WEEKNUM của Excel)
-  const j = new Date(y, 0, 1), a = new Date(y, 0, 1 - j.getDay() + (w - 1) * 7), b = new Date(a.getFullYear(), a.getMonth(), a.getDate() + 6);
-  const lo = a < j ? j : a, hi = b.getFullYear() > y ? new Date(y, 11, 31) : b;
-  return `${pad2(lo.getDate())}/${pad2(lo.getMonth() + 1)}–${pad2(hi.getDate())}/${pad2(hi.getMonth() + 1)}`;
-}
 // Tìm (hoặc tạo) cột "Tuần w" của năm y; cột mới được chèn đúng vị trí theo thứ tự năm/tuần
 function weekCol(y, w, create) {
   const hit = Object.entries(S.weekCols || {}).find(([, v]) => v.y === y && v.w === w); if (hit) return +hit[0];
@@ -1147,16 +1142,27 @@ function buildForm(rec, {isEdit, onDone}) {
     if (l.length) form.insertAdjacentHTML("afterbegin", `<div class="insights" style="grid-column:span 12;margin-top:0;padding-top:0;border-top:0"><h3>Vấn đề dữ liệu của dòng này</h3>${l.map(c => `<div class="ins"><span class="sev sev-${ISSUES[c].sev}">${SEV_ICON[ISSUES[c].sev]}</span><span><b>${esc(ISSUES[c].label)}</b> — ${esc(issueDetail(r, c) || ISSUES[c].desc)}</span></div>`).join("")}</div>`);
   }
   // ---- Nhật ký theo tuần
-  E("_wkDate").value = TODAY;
+  // Chọn Năm + Tuần (mặc định tuần hiện tại); tuần nào của KH đã có nhật ký thì đánh dấu ✓
+  const now = new Date(), curY = now.getFullYear(), curW = weekNum(now);
+  const has = (y, w) => weeklyEntries(r).some(e => e.y === y && e.w === w);
+  const wkYears = [...new Set([curY, ...Object.values(S.weekCols || {}).map(v => v.y)])].sort((a, b) => b - a);
+  E("_wkYear").innerHTML = wkYears.map(y => `<option value="${y}">${y}</option>`).join("");
+  E("_wkYear").value = curY;
   const wkLabel = form.querySelector("[data-wk-label]");
-  const updWk = () => { const d = E("_wkDate").value ? new Date(E("_wkDate").value + "T00:00:00") : null;
-    if (!d || isNaN(d)) { wkLabel.textContent = ""; return; }
-    const y = d.getFullYear(), w = weekNum(d), has = weeklyEntries(r).find(e => e.y === y && e.w === w);
-    wkLabel.textContent = `→ Tuần ${w}/${y} (${weekRange(y, w)})` + (has ? " · tuần này đã có nhật ký, sẽ ghi nối tiếp" : ""); };
-  E("_wkDate").oninput = updWk; updWk();
+  const fillWeeks = keep => {
+    const y = +E("_wkYear").value, maxW = weekNum(new Date(y, 11, 31)), lastW = y === curY ? curW : maxW;
+    E("_wkWeek").innerHTML = Array.from({length: lastW}, (_, i) => lastW - i)
+      .map(w => `<option value="${w}">Tuần ${w}${has(y, w) ? " ✓" : ""}</option>`).join("");
+    E("_wkWeek").value = keep && +keep <= lastW ? keep : lastW;
+    updWk();
+  };
+  const updWk = () => { const y = +E("_wkYear").value, w = +E("_wkWeek").value;
+    wkLabel.textContent = has(y, w) ? "Tuần này đã có nhật ký — nội dung mới sẽ được ghi nối tiếp" : "✓ = tuần đã có nhật ký"; };
+  E("_wkYear").onchange = () => fillWeeks(E("_wkWeek").value); E("_wkWeek").onchange = updWk;
+  fillWeeks(curW);
   const entries = weeklyEntries(r), wh = form.querySelector("[data-weeks]");
   wh.innerHTML = entries.length
-    ? `<div class="wk-head">Nhật ký các tuần trước <span class="muted">(${entries.length} tuần · sửa trực tiếp, xoá hết chữ để xoá)</span></div><div class="wk-list">${entries.map(e => `<div class="wk-row"><label for="${pre}wk${e.col}">Tuần ${e.w}/${e.y}<small>${weekRange(e.y, e.w)}</small></label><textarea id="${pre}wk${e.col}" name="_wkc_${e.col}" rows="${Math.min(5, Math.max(e.text.split("\n").length, Math.ceil(e.text.length / 90)))}">${esc(e.text)}</textarea></div>`).join("")}</div>`
+    ? `<div class="wk-head">Nhật ký các tuần trước <span class="muted">(${entries.length} tuần · sửa trực tiếp, xoá hết chữ để xoá)</span></div><div class="wk-list">${entries.map(e => `<div class="wk-row"><label for="${pre}wk${e.col}">Tuần ${e.w}/${e.y}</label><textarea id="${pre}wk${e.col}" name="_wkc_${e.col}" rows="${Math.min(5, Math.max(e.text.split("\n").length, Math.ceil(e.text.length / 90)))}">${esc(e.text)}</textarea></div>`).join("")}</div>`
     : `<div class="wk-head muted">Chưa có nhật ký tuần nào.</div>`;
   const msg = form.querySelector("[data-msg]");
   const cancel = form.querySelector("[data-cancel]");
@@ -1202,11 +1208,11 @@ function buildForm(rec, {isEdit, onDone}) {
       if (v !== old.trim()) { while (out._raw.length <= c) out._raw.push(null); out._raw[c] = v || null; out._wkEdited = true; }
     }
     // 2) thêm nhật ký cho tuần được chọn
-    const wkNote = E("_wkNote").value.trim(), wd = new Date((E("_wkDate").value || TODAY) + "T00:00:00");
-    if (wkNote && !isNaN(wd)) {
-      const col = weekCol(wd.getFullYear(), weekNum(wd), true);
+    const wkNote = E("_wkNote").value.trim(), wy = +E("_wkYear").value, ww = +E("_wkWeek").value;
+    if (wkNote && wy && ww) {
+      const col = weekCol(wy, ww, true);
       while (out._raw.length <= col) out._raw.push(null);
-      const line = `${pad2(wd.getDate())}/${pad2(wd.getMonth() + 1)}: ${wkNote}`, cur = out._raw[col];
+      const line = wkNote, cur = out._raw[col];
       out._raw[col] = cur != null && String(cur).trim() ? String(cur).trim() + "\n" + line : line;
       out._wkEdited = true;
     }
