@@ -202,3 +202,16 @@ td.flag{color:var(--warn-ink)}
 .role-admin{background:var(--crit-soft);color:var(--crit-ink)}
 .role-editor{background:var(--info-soft);color:var(--info-ink)}
 .role-viewer{background:var(--good-soft);color:var(--good-ink)}
+
+/* ===== Nhật ký theo tuần ===== */
+.f.w9{grid-column:span 9}
+@media (max-width:760px){.f.w9{grid-column:span 12}}
+.weeks{grid-column:span 12;display:flex;flex-direction:column;gap:8px}
+.wk-head{font-size:12px;font-weight:600;color:var(--ink-2)}
+.wk-head .muted{font-weight:400}
+.wk-list{display:flex;flex-direction:column;gap:6px;max-height:340px;overflow-y:auto;padding-right:4px}
+.wk-row{display:grid;grid-template-columns:130px 1fr;gap:10px;align-items:start}
+.wk-row label{font-size:12px;font-weight:600;color:var(--ink);padding-top:7px;display:flex;flex-direction:column}
+.wk-row label small{font-weight:400;color:var(--muted);font-size:11px}
+.wk-row textarea{border:1px solid var(--line-2);background:var(--surface);border-radius:8px;padding:6px 10px;width:100%;resize:vertical;font-size:13px}
+@media (max-width:760px){.wk-row{grid-template-columns:1fr;gap:2px}.wk-row label{padding-top:0;flex-direction:row;gap:8px;align-items:baseline}}

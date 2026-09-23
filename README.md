@@ -77,7 +77,13 @@ Về file Excel:
 1. **Tổng quan**: KPI so với cùng kỳ năm trước; biểu đồ và bảng theo tháng, trạng thái, nguồn, loại KH, lý do kết thúc, phân khúc, chiến dịch QC, khu vực, người phụ trách, hợp đồng.
    - Mỗi bảng có khung **Nhận định** tự phát hiện số liệu bất thường.
    - Mọi bảng **sắp xếp được** khi bấm tiêu đề cột.
-2. **Danh sách KH**: tìm kiếm, lọc (kể cả theo vấn đề dữ liệu), sửa, thêm ghi chú, xoá.
+2. **Danh sách KH**: tìm kiếm, lọc (kể cả theo vấn đề dữ liệu), sửa, xoá.
+   - **Nhật ký theo tuần**: mở một KH → mục *Nhật ký chăm sóc theo tuần*.
+     - Chọn ngày chăm sóc (mặc định hôm nay), web tự tính *Tuần N/năm*. Nhập nội dung rồi bấm **Lưu**.
+     - Nội dung được ghi vào đúng cột "Tuần N" của năm đó trong Excel. Nếu chưa có cột tuần đó, web tự chèn đúng vị trí.
+     - Tuần đã có nhật ký thì ghi nối tiếp, mỗi dòng có ngày ở đầu.
+     - Các tuần cũ hiện ngay bên dưới để sửa trực tiếp; xoá hết chữ là xoá nhật ký tuần đó.
+   - **Nhiều số điện thoại**: ghi `số1;số2`, ví dụ `0912345678;0987654321`. Web kiểm tra từng số (di động 10 số, số bàn 02x 11 số), tìm kiếm và phát hiện trùng theo từng số.
 3. **Kiểm tra dữ liệu**: các dòng lỗi, cảnh báo hoặc lưu ý, kèm đối chiếu với sheet Thống kê của Excel.
 4. **+ Thêm khách hàng**.
 5. **Xuất Excel**: file gồm các phần sau:

@@ -9,7 +9,7 @@
 const DATA_FILE = "data/Report_CSKH.enc";
 const KEYS_FILE = "data/keys.json";
 const IDLE_MIN = 60;
-const STATE_VERSION = 2; // tăng khi đổi cách đọc file để trình duyệt đọc lại từ đầu // tự đăng xuất sau 60 phút không thao tác
+const STATE_VERSION = 3; // tăng khi đổi cách đọc file để trình duyệt đọc lại từ đầu
 
 // ================= Danh mục =================
 // Cột lõi của sheet danh sách KH: [key, tiêu đề cột trong Excel]
@@ -64,8 +64,8 @@ const ISSUES = {
   FUTURE_DATE:    {sev: "warn", label: "Ngày nhận ở tương lai", desc: "Ngày nhận sau ngày hôm nay — có thể gõ nhầm năm/tháng", affects: "Thống kê theo tháng"},
   PLACEHOLDER_DATE:{sev: "warn", label: "Ngày nhận nghi là ngày mặc định", desc: "Rất nhiều KH trùng một ngày nhận (VD 01/01/2025) — thường do nhập bù dữ liệu cũ, làm tháng đó cao đột biến", affects: "Biểu đồ theo tháng"},
   NO_PHONE:       {sev: "warn", label: "Thiếu số điện thoại", desc: "Không có SĐT để liên hệ và kiểm tra trùng", affects: "Chăm sóc, kiểm tra trùng"},
-  BAD_PHONE:      {sev: "warn", label: "SĐT sai định dạng", desc: "Số điện thoại không đủ/thừa chữ số (chuẩn 10 số)", affects: "Chăm sóc, kiểm tra trùng"},
-  DUP_PHONE:      {sev: "warn", label: "Trùng số điện thoại", desc: "Cùng SĐT xuất hiện ở nhiều dòng → có thể đếm 1 KH nhiều lần", affects: "Tổng số KH"},
+  BAD_PHONE:      {sev: "warn", label: "SĐT sai định dạng", desc: "Có số không đúng 10 chữ số (di động) hoặc 11 chữ số (số bàn 02x). Nhiều số thì ghi “số1;số2”", affects: "Chăm sóc, kiểm tra trùng"},
+  DUP_PHONE:      {sev: "warn", label: "Trùng số điện thoại", desc: "Một trong các SĐT của KH này xuất hiện ở dòng khác → có thể đếm 1 KH nhiều lần", affects: "Tổng số KH"},
   END_NO_REASON:  {sev: "warn", label: "Kết thúc nhưng không ghi lý do", desc: "Trạng thái Kết thúc mà trống Lý do kết thúc", affects: "Bảng Lý do kết thúc"},
   REASON_NOT_END: {sev: "warn", label: "Có lý do kết thúc nhưng chưa Kết thúc", desc: "Có Lý do kết thúc nhưng trạng thái khác “Kết thúc”", affects: "Bảng Lý do kết thúc"},
   SIGNED_NO_VALUE:{sev: "warn", label: "Đã ký HĐ nhưng thiếu giá trị", desc: "Không có Giá trị báo giá/HĐ", affects: "Giá trị HĐ, doanh thu"},
@@ -88,6 +88,21 @@ const pctS = v => v == null ? "—" : v.toLocaleString("vi-VN", {maximumFraction
 const pct = (a, b) => pctS(pctN(a, b));
 const pp = d => (d > 0 ? "+" : "") + d.toLocaleString("vi-VN", {maximumFractionDigits: 1}) + " điểm %";
 const phoneKey = p => String(p || "").replace(/\D/g, "");
+// Một ô SĐT có thể ghi nhiều số: "0912345678;0987654321" (dấu ; — cũng chấp nhận , / xuống dòng)
+function phonesOf(v) {
+  const out = [];
+  for (const part of String(v || "").split(/[;,\/|\n]+/)) {
+    const t = part.trim(); if (!t) continue;
+    let d = t.replace(/\D/g, "");
+    if (!d) { out.push(""); continue; }                 // có chữ nhưng không có số (VD "Anh Thịnh")
+    if (d.length >= 19 && /\s/.test(t)) { t.split(/\s+/).map(x => x.replace(/\D/g, "")).filter(Boolean).forEach(x => out.push(x)); continue; }
+    if (/^84\d{9,10}$/.test(d)) d = "0" + d.slice(2);    // +84 → 0
+    out.push(d);
+  }
+  return out;
+}
+const phoneOk = p => /^0[35789]\d{8}$/.test(p) || /^02\d{9}$/.test(p) || /^0\d{9}$/.test(p); // di động 10 số, số bàn 11 số (02x)
+const validPhones = v => phonesOf(v).filter(p => p.length >= 9);
 const norm = s => String(s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 const pad2 = n => String(n).padStart(2, "0");
 const isoOf = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
@@ -315,13 +330,15 @@ function parseWorkbook(buf, fileName, sig, modified) {
     if (idx <= found.headerRow || !row || !row.some(v => v != null && String(v).trim() !== "")) return;
     records.push(recordFromRow(row, colOf, records.length, idx + 1 + found.start));
   });
-  return {v: STATE_VERSION, fileName, fileSig: sig, fileModified: modified, sheetName: found.name, headerRow: found.headerRow, importedAt: new Date().toISOString(), header, colOf, records};
+  const st = {v: STATE_VERSION, fileName, fileSig: sig, fileModified: modified, sheetName: found.name, headerRow: found.headerRow, importedAt: new Date().toISOString(), header, colOf, records};
+  buildWeekMap(st);
+  return st;
 }
 async function sha1(buf) {
   try { return [...new Uint8Array(await crypto.subtle.digest("SHA-1", buf))].map(b => b.toString(16).padStart(2, "0")).join(""); }
   catch (e) { return "len" + buf.byteLength; } // trình duyệt không hỗ trợ crypto.subtle (http không phải localhost)
 }
-const editCount = st => st ? st.records.filter(r => r._new || r._deleted || isEdited(r)).length : 0;
+const editCount = st => st ? st.records.filter(r => r._new || r._deleted || r._wkEdited || isEdited(r)).length : 0;
 
 // Nạp file dữ liệu cố định trong thư mục data/ (xem DATA_FILE ở đầu file)
 async function loadDataFile() {
@@ -356,13 +373,53 @@ async function loadDataFile() {
 let prevNotice = 0;
 function setStatus(html, isErr) { const el = $("#statusBox"); el.hidden = false; el.classList.toggle("err", !!isErr); el.innerHTML = `<h2>${isErr ? "Chưa tải được dữ liệu" : "Đang tải…"}</h2><p>${html}</p>`; }
 
+// ================= Nhật ký theo tuần =================
+/* Trong Excel, nhật ký tuần nằm ở các cột "Tuần N", xếp theo từng năm từ mới đến cũ:
+   [Tuần 27 … Tuần 2] của 2026, [Tuần 53 … Tuần 1] của 2025, …  Tên cột lặp lại giữa các năm,
+   nên web xác định năm của mỗi cột theo thứ tự: số tuần tăng lên = bắt đầu nhóm của năm trước. */
+const WEEK_RE = /^tuần\s*(\d+)$/i;
+function buildWeekMap(st) {
+  const core = new Set(Object.values(st.colOf)), years = st.records.map(r => +r.nam).filter(y => y >= 2000 && y < 2100);
+  const y0 = years.length ? Math.max(...years) : new Date().getFullYear();
+  const map = {}; let prev = Infinity, blk = 0;
+  st.header.forEach((h, i) => { const m = String(h || "").trim().match(WEEK_RE); if (!m || core.has(i)) return; const w = +m[1]; if (w > prev) blk++; prev = w; map[i] = {y: y0 - blk, w}; });
+  st.weekCols = map;
+}
+function weekRange(y, w) { // tuần bắt đầu Chủ nhật, tuần 1 chứa ngày 1/1 (giống WEEKNUM của Excel)
+  const j = new Date(y, 0, 1), a = new Date(y, 0, 1 - j.getDay() + (w - 1) * 7), b = new Date(a.getFullYear(), a.getMonth(), a.getDate() + 6);
+  const lo = a < j ? j : a, hi = b.getFullYear() > y ? new Date(y, 11, 31) : b;
+  return `${pad2(lo.getDate())}/${pad2(lo.getMonth() + 1)}–${pad2(hi.getDate())}/${pad2(hi.getMonth() + 1)}`;
+}
+// Tìm (hoặc tạo) cột "Tuần w" của năm y; cột mới được chèn đúng vị trí theo thứ tự năm/tuần
+function weekCol(y, w, create) {
+  const hit = Object.entries(S.weekCols || {}).find(([, v]) => v.y === y && v.w === w); if (hit) return +hit[0];
+  if (!create) return -1;
+  const cols = Object.entries(S.weekCols || {}).map(([c, v]) => [+c, v]).sort((a, b) => a[0] - b[0]);
+  let pos = null;
+  for (const [c, v] of cols) if (v.y < y || (v.y === y && v.w < w)) { pos = c; break; }
+  if (pos == null) pos = cols.length ? cols[cols.length - 1][0] + 1 : (S.colOf.nhatKy != null ? S.colOf.nhatKy + 1 : S.header.length);
+  S.header.splice(pos, 0, "Tuần " + w);
+  for (const r of S.records) if (r._raw && r._raw.length > pos) r._raw.splice(pos, 0, null);
+  for (const k in S.colOf) if (S.colOf[k] >= pos) S.colOf[k]++;
+  const nm = {}; for (const [c, v] of Object.entries(S.weekCols || {})) nm[+c >= pos ? +c + 1 : +c] = v; nm[pos] = {y, w}; S.weekCols = nm;
+  return pos;
+}
+function weeklyEntries(r) { // [{col, y, w, text}] mới nhất trước
+  if (!r._raw || !S || !S.weekCols) return [];
+  return Object.entries(S.weekCols).map(([c, v]) => ({col: +c, ...v, raw: r._raw[+c]}))
+    .filter(e => e.raw != null && String(e.raw).trim() !== "")
+    .map(e => ({...e, text: e.raw instanceof Date ? dmy(isoOf(e.raw)) : String(e.raw)}))
+    .sort((a, b) => b.y - a.y || b.w - a.w);
+}
+const latestNote = r => { const e = weeklyEntries(r)[0]; return e ? `T${e.w}/${e.y}: ${e.text}` : String(r.nhatKy || r.thongTin || ""); };
+
 // ================= Phát hiện vấn đề dữ liệu =================
 let placeholderDates = new Set(), accVariants = {};
 function computeIssues() {
   issueMap = new Map();
   const phoneN = {}, dateN = {}, accSpell = {};
   for (const r of all) {
-    const p = phoneKey(r.sdt); if (p.length >= 9) phoneN[p] = (phoneN[p] || 0) + 1;
+    for (const p of new Set(validPhones(r.sdt))) phoneN[p] = (phoneN[p] || 0) + 1;
     if (r.ngay) dateN[r.ngay] = (dateN[r.ngay] || 0) + 1;
     if (r.acc) (accSpell[r.acc.toLowerCase()] ||= new Set()).add(r.acc);
   }
@@ -379,9 +436,9 @@ function computeIssues() {
     if (/^20\d\d$/.test(y)) { if (!r.thang) out.push("NO_MONTH"); else if (dOk && +r.ngay.slice(5, 7) !== +r.thang && r.ngay.slice(0, 4) === y) out.push("MONTH_MISMATCH"); }
     if (!r.ngay) out.push("NO_DATE"); else if (dOk && r.ngay > TODAY) out.push("FUTURE_DATE");
     if (placeholderDates.has(r.ngay)) out.push("PLACEHOLDER_DATE");
-    const p = phoneKey(r.sdt);
-    if (!p) out.push("NO_PHONE"); else if (p.length !== 10) out.push("BAD_PHONE");
-    if (p.length >= 9 && phoneN[p] > 1) out.push("DUP_PHONE");
+    const ps = phonesOf(r.sdt);
+    if (!ps.some(Boolean)) out.push(r.sdt ? "BAD_PHONE" : "NO_PHONE"); else if (ps.some(p => !phoneOk(p))) out.push("BAD_PHONE");
+    if (validPhones(r.sdt).some(p => phoneN[p] > 1)) out.push("DUP_PHONE");
     if (!r.ten) out.push("NO_NAME");
     if (!r.loai) out.push("NO_LOAI");
     if (!r.trangThai) out.push("NO_STATUS");
@@ -417,8 +474,8 @@ function issueDetail(r, c) {
     case "YEAR_DERIVED": return `Cột Năm trong Excel trống, web lấy ${r.nam} từ Ngày nhận ${dmy(r.ngay)}`;
     case "FUTURE_DATE": return `Ngày nhận = ${dmy(r.ngay)}`;
     case "PLACEHOLDER_DATE": return `Ngày nhận = ${dmy(r.ngay)} (trùng với rất nhiều KH khác)`;
-    case "BAD_PHONE": return `SĐT = ${r.sdt} (${phoneKey(r.sdt).length} chữ số)`;
-    case "DUP_PHONE": { const d = all.filter(x => x.id !== r.id && phoneKey(x.sdt) === phoneKey(r.sdt)); return `Trùng với: ${d.slice(0, 3).map(x => (x.ten || "KH") + " – " + (x.acc || "?") + " – " + (dmy(x.ngay) || x.nam || "")).join("; ")}`; }
+    case "BAD_PHONE": return `SĐT = “${r.sdt}” — ${phonesOf(r.sdt).filter(p => !phoneOk(p)).map(p => p ? p + " (" + p.length + " chữ số)" : "không có chữ số").join(", ")}. Nhiều số thì cách nhau bằng dấu ;`;
+    case "DUP_PHONE": { const mine = new Set(validPhones(r.sdt)); const d = all.filter(x => x.id !== r.id && validPhones(x.sdt).some(p => mine.has(p))); return `Trùng với: ${d.slice(0, 3).map(x => (x.ten || "KH") + " – " + (x.acc || "?") + " – " + (dmy(x.ngay) || x.nam || "")).join("; ")}`; }
     case "KV_MISMATCH": return `Tỉnh = ${r.tinh}, Khu vực = ${r.kv} (đúng phải là ${kvOf(r.tinh)})`;
     case "UNKNOWN_TINH": return `Tỉnh = “${r.tinh}”`;
     case "BAD_CODE": return [r.nguon && !NGUON.includes(r.nguon) && `Nguồn = ${r.nguon}`, r.nguonQC && !QC[r.nguonQC] && `Nguồn QC = ${r.nguonQC}`, r.lyDo && !LYDO[r.lyDo] && `Lý do = ${r.lyDo}`, r.phanKhuc && !PK[r.phanKhuc] && `Phân khúc = ${r.phanKhuc}`, r.loai && !LOAI.some(l => l[0] === r.loai) && `Loại KH = ${r.loai}`].filter(Boolean).join(", ");
@@ -890,7 +947,7 @@ function resetListFilters() { ["#lYear", "#lLoai", "#lSt", "#lAcc", "#lNguon", "
 function filtered() {
   const Y = $("#lYear").value, L = $("#lLoai").value, St = $("#lSt").value, A = $("#lAcc").value, N = $("#lNguon").value, X = $("#lIssue").value, q = $("#q").value.trim().toLowerCase(), qd = phoneKey(q);
   return all.filter(r => (!Y || r.nam === Y) && (!L || r.loai === L) && (!St || r.trangThai === St) && (!A || r.acc === A) && (!N || r.nguon === N) && (!X || hasIssue(r, X)) &&
-    (!q || [r.ten, r.tinh, r.email, r.nganh, r.thongTin, r.nhatKy, r.diaChi, r.acc].some(v => v && String(v).toLowerCase().includes(q)) || (qd.length >= 4 && phoneKey(r.sdt).includes(qd))));
+    (!q || ([r.ten, r.tinh, r.email, r.nganh, r.thongTin, r.nhatKy, r.diaChi, r.acc, r.sdt].some(v => v && String(v).toLowerCase().includes(q)) || weeklyEntries(r).some(e => e.text.toLowerCase().includes(q))) || (qd.length >= 4 && phonesOf(r.sdt).some(p => p.includes(qd)))));
 }
 const LIST_COLS = [
   {k: "ngay", label: "Ngày nhận", html: r => dmy(r.ngay) || '<span class="muted">—</span>'},
@@ -899,7 +956,7 @@ const LIST_COLS = [
   {k: "trangThai", label: "Trạng thái", html: r => r.trangThai ? `<span class="chip" data-s="${esc(r.trangThai)}">${esc(r.trangThai)}</span>` : ""},
   {k: "iss", label: "Vấn đề", num: true, val: r => issuesOf(r).filter(c => ISSUES[c].sev !== "info").length || null,
     html: r => { const l = issuesOf(r).filter(c => ISSUES[c].sev !== "info"); return l.length ? `<span class="warnmark" title="${esc(l.map(c => ISSUES[c].label + (issueDetail(r, c) ? ": " + issueDetail(r, c) : "")).join("\n"))}">${l.length}</span>` : ""; }},
-  {k: "nhatKy", label: "Ghi chú gần nhất", html: r => `<span class="muted clip" style="display:inline-block">${esc(String(r.nhatKy || r.thongTin || "").split("\n")[0])}</span>`},
+  {k: "nhatKy", label: "Nhật ký gần nhất", val: r => { const e = weeklyEntries(r)[0]; return e ? e.y * 100 + e.w : null; }, html: r => `<span class="muted clip" style="display:inline-block">${esc(latestNote(r).split("\n")[0])}</span>`},
 ];
 function renderList() {
   const rs = sortRows("#tbList", LIST_COLS, filtered(), {k: "ngay", dir: "desc"});
@@ -908,7 +965,7 @@ function renderList() {
   $("#pgInfo").textContent = `${fmt(rs.length)} KH · trang ${page + 1}/${pages}`;
   $("#pgPrev").disabled = page === 0; $("#pgNext").disabled = page >= pages - 1;
 }
-const isEdited = r => r._orig && CORE.some(([k]) => (r[k] ?? "") !== (r._orig[k] ?? ""));
+const isEdited = r => !!r._wkEdited || (r._orig && CORE.some(([k]) => (r[k] ?? "") !== (r._orig[k] ?? "")));
 
 // ================= Kiểm tra dữ liệu =================
 ["#cYear", "#cSev"].forEach(s => $(s).onchange = renderCheck);
@@ -1049,18 +1106,6 @@ function forceRecalc(buf) {
 
 // ================= Form thêm / sửa =================
 const opt = (vals, labels, blank = true) => (blank ? `<option value=""></option>` : "") + vals.map(v => `<option value="${esc(v)}">${esc(labels ? labels(v) : v)}</option>`).join("");
-function weeklyHistory(r) {
-  if (!r._raw || !S) return [];
-  const coreCols = new Set(Object.values(S.colOf));
-  const out = [];
-  r._raw.forEach((v, i) => {
-    if (coreCols.has(i) || v == null || String(v).trim() === "") return;
-    const h = String(S.header[i] || "").trim();
-    if (!/^tuần\s*\d+$/i.test(h)) return;
-    out.push([h, v instanceof Date ? dmy(isoOf(v)) : String(v)]);
-  });
-  return out;
-}
 function buildForm(rec, {isEdit, onDone}) {
   const form = $("#formTpl").content.cloneNode(true).querySelector("form");
   const pre = isEdit ? "E_" : "A_";
@@ -1088,23 +1133,31 @@ function buildForm(rec, {isEdit, onDone}) {
   E("tinh").onchange = () => { const k = kvOf(E("tinh").value); if (k) E("kv").value = k; };
   const pw = form.querySelector("[data-phone]");
   E("sdt").oninput = () => {
-    const p = phoneKey(E("sdt").value); let m = "";
-    if (p && p.length !== 10) m = "Số điện thoại chuẩn có 10 chữ số.";
-    const dup = p.length >= 9 && all.find(x => x.id !== r.id && phoneKey(x.sdt) === p);
-    if (dup) m = `Trùng SĐT với ${dup.ten || "KH"} (${dup.acc || "?"}, ${dmy(dup.ngay) || dup.nam || ""}) — vẫn có thể lưu.`;
-    pw.textContent = m; pw.hidden = !m;
+    const ps = phonesOf(E("sdt").value), msgs = [];
+    const bad = ps.filter(p => !phoneOk(p));
+    if (bad.length) msgs.push(`Số chưa đúng: ${bad.map(p => p || "(không có chữ số)").join(", ")} — di động 10 số, số bàn 11 số. Nhiều số cách nhau bằng dấu ;`);
+    const mine = new Set(ps.filter(p => p.length >= 9));
+    const dup = mine.size && all.find(x => x.id !== r.id && validPhones(x.sdt).some(p => mine.has(p)));
+    if (dup) msgs.push(`Trùng SĐT với ${dup.ten || "KH"} (${dup.acc || "?"}, ${dmy(dup.ngay) || dup.nam || ""}) — vẫn có thể lưu.`);
+    pw.textContent = msgs.join(" "); pw.hidden = !msgs.length;
   };
   E("sdt").oninput();
   if (isEdit) { // các vấn đề của dòng này
     const l = issuesOf(r);
     if (l.length) form.insertAdjacentHTML("afterbegin", `<div class="insights" style="grid-column:span 12;margin-top:0;padding-top:0;border-top:0"><h3>Vấn đề dữ liệu của dòng này</h3>${l.map(c => `<div class="ins"><span class="sev sev-${ISSUES[c].sev}">${SEV_ICON[ISSUES[c].sev]}</span><span><b>${esc(ISSUES[c].label)}</b> — ${esc(issueDetail(r, c) || ISSUES[c].desc)}</span></div>`).join("")}</div>`);
   }
-  const hist = weeklyHistory(r);
-  if (hist.length) {
-    form.querySelector("[data-hist-title]").hidden = false;
-    const h = form.querySelector("[data-hist]"); h.hidden = false;
-    h.innerHTML = hist.map(([w, t]) => `<div><b>${esc(w)}</b>${esc(t)}</div>`).join("");
-  }
+  // ---- Nhật ký theo tuần
+  E("_wkDate").value = TODAY;
+  const wkLabel = form.querySelector("[data-wk-label]");
+  const updWk = () => { const d = E("_wkDate").value ? new Date(E("_wkDate").value + "T00:00:00") : null;
+    if (!d || isNaN(d)) { wkLabel.textContent = ""; return; }
+    const y = d.getFullYear(), w = weekNum(d), has = weeklyEntries(r).find(e => e.y === y && e.w === w);
+    wkLabel.textContent = `→ Tuần ${w}/${y} (${weekRange(y, w)})` + (has ? " · tuần này đã có nhật ký, sẽ ghi nối tiếp" : ""); };
+  E("_wkDate").oninput = updWk; updWk();
+  const entries = weeklyEntries(r), wh = form.querySelector("[data-weeks]");
+  wh.innerHTML = entries.length
+    ? `<div class="wk-head">Nhật ký các tuần trước <span class="muted">(${entries.length} tuần · sửa trực tiếp, xoá hết chữ để xoá)</span></div><div class="wk-list">${entries.map(e => `<div class="wk-row"><label for="${pre}wk${e.col}">Tuần ${e.w}/${e.y}<small>${weekRange(e.y, e.w)}</small></label><textarea id="${pre}wk${e.col}" name="_wkc_${e.col}" rows="${Math.min(5, Math.max(e.text.split("\n").length, Math.ceil(e.text.length / 90)))}">${esc(e.text)}</textarea></div>`).join("")}</div>`
+    : `<div class="wk-head muted">Chưa có nhật ký tuần nào.</div>`;
   const msg = form.querySelector("[data-msg]");
   const cancel = form.querySelector("[data-cancel]");
   cancel.onclick = () => onDone(false);
@@ -1139,10 +1192,24 @@ function buildForm(rec, {isEdit, onDone}) {
     const d = new Date(out.ngay + "T00:00:00");
     if (!isNaN(d)) { out.nam = String(d.getFullYear()); out.thang = String(d.getMonth() + 1); out.tuan = String(weekNum(d)); out._namDerived = false; }
     if (!out.kv && kvOf(out.tinh)) out.kv = kvOf(out.tinh);
-    const note = E("_note").value.trim();
-    if (note) { const t = new Date(); out.nhatKy = `${pad2(t.getDate())}/${pad2(t.getMonth() + 1)}/${t.getFullYear()}: ${note}` + (out.nhatKy ? "\n" + out.nhatKy : ""); }
     out.updatedAt = new Date().toISOString();
     if (!isEdit) S.records.push(out);
+    // 1) sửa / xoá nhật ký các tuần đã có (làm trước khi có thể chèn cột mới)
+    out._raw ||= [];
+    for (const el of form.elements) {
+      const m = el.name && el.name.match(/^_wkc_(\d+)$/); if (!m) continue;
+      const c = +m[1], old = out._raw[c] == null ? "" : String(out._raw[c] instanceof Date ? dmy(isoOf(out._raw[c])) : out._raw[c]), v = el.value.trim();
+      if (v !== old.trim()) { while (out._raw.length <= c) out._raw.push(null); out._raw[c] = v || null; out._wkEdited = true; }
+    }
+    // 2) thêm nhật ký cho tuần được chọn
+    const wkNote = E("_wkNote").value.trim(), wd = new Date((E("_wkDate").value || TODAY) + "T00:00:00");
+    if (wkNote && !isNaN(wd)) {
+      const col = weekCol(wd.getFullYear(), weekNum(wd), true);
+      while (out._raw.length <= col) out._raw.push(null);
+      const line = `${pad2(wd.getDate())}/${pad2(wd.getMonth() + 1)}: ${wkNote}`, cur = out._raw[col];
+      out._raw[col] = cur != null && String(cur).trim() ? String(cur).trim() + "\n" + line : line;
+      out._wkEdited = true;
+    }
     persist(); refreshAll(); if (view === "check") renderCheck();
     toast(isEdit ? "Đã lưu thay đổi" : "Đã thêm khách hàng " + (out.ten || out.sdt));
     onDone(true);
