@@ -8,7 +8,8 @@
 // Muốn cập nhật dữ liệu: chép file Excel mới đè lên data/Report_CSKH.xlsx, chạy lại tools/encrypt.js rồi đẩy lên GitHub.
 const DATA_FILE = "data/Report_CSKH.enc";
 const KEYS_FILE = "data/keys.json";
-const IDLE_MIN = 60; // tự đăng xuất sau 60 phút không thao tác
+const IDLE_MIN = 60;
+const STATE_VERSION = 2; // tăng khi đổi cách đọc file để trình duyệt đọc lại từ đầu // tự đăng xuất sau 60 phút không thao tác
 
 // ================= Danh mục =================
 // Cột lõi của sheet danh sách KH: [key, tiêu đề cột trong Excel]
@@ -244,11 +245,31 @@ function parseDateStr(s) { // chuỗi ngày dạng m/d/yy -> ISO
   const m = String(s).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/); if (!m) return "";
   let y = +m[3]; if (y < 100) y += 2000; return `${y}-${pad2(m[1])}-${pad2(m[2])}`;
 }
+// Đọc sheet thành mảng dòng; ô ngày được đổi từ mã ngày Excel sang Date đúng nửa đêm giờ địa phương.
+// (Không dùng cellDates của SheetJS: ở múi giờ Việt Nam nó lùi mọi ngày 30 giây → thành ngày hôm trước.)
+function serialToDate(v) { const p = XLSX.SSF.parse_date_code(v); return p ? new Date(p.y, p.m - 1, p.d, p.H, p.M, Math.round(p.S)) : null; }
+function dateToSerial(d) { return (Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()) - Date.UTC(1899, 11, 30)) / 864e5; }
+function sheetRows(ws) {
+  const rg = XLSX.utils.decode_range(ws["!ref"]), rows = [];
+  for (let R = rg.s.r; R <= rg.e.r; R++) {
+    const row = [];
+    for (let C = rg.s.c; C <= rg.e.c; C++) {
+      const c = ws[XLSX.utils.encode_cell({r: R, c: C})];
+      let v = c ? c.v : null;
+      if (c && c.t === "n" && c.z && XLSX.SSF.is_date(c.z)) v = serialToDate(c.v) || v;
+      else if (c && c.t === "d") v = c.v;
+      else if (c && c.t === "e") v = null;
+      row[C - rg.s.c] = v === undefined ? null : v;
+    }
+    rows.push(row);
+  }
+  return rows;
+}
 function findListSheet(wb) {
   for (const name of wb.SheetNames) {
     const ws = wb.Sheets[name]; if (!ws["!ref"]) continue;
     const start = XLSX.utils.decode_range(ws["!ref"]).s.r;
-    const rows = XLSX.utils.sheet_to_json(ws, {header: 1, defval: null, raw: true, blankrows: true});
+    const rows = sheetRows(ws);
     for (let i = 0; i < Math.min(10, rows.length); i++) {
       const h = (rows[i] || []).map(norm);
       if (h.includes("điện thoại") && h.includes("trạng thái")) return {name, rows, headerRow: i, start};
@@ -284,7 +305,7 @@ function recordFromRow(row, colOf, i, excelRow) {
 }
 // Đọc file Excel (ArrayBuffer) thành trạng thái ứng dụng
 function parseWorkbook(buf, fileName, sig, modified) {
-  const wb = XLSX.read(buf, {type: "array", cellDates: true});
+  const wb = XLSX.read(buf, {type: "array", cellNF: true});
   const found = findListSheet(wb);
   if (!found) throw new Error("Không tìm thấy sheet có cột “Điện thoại” và “Trạng thái” trong " + fileName);
   const header = (found.rows[found.headerRow] || []).map(h => h == null ? "" : String(h));
@@ -294,7 +315,7 @@ function parseWorkbook(buf, fileName, sig, modified) {
     if (idx <= found.headerRow || !row || !row.some(v => v != null && String(v).trim() !== "")) return;
     records.push(recordFromRow(row, colOf, records.length, idx + 1 + found.start));
   });
-  return {fileName, fileSig: sig, fileModified: modified, sheetName: found.name, headerRow: found.headerRow, importedAt: new Date().toISOString(), header, colOf, records};
+  return {v: STATE_VERSION, fileName, fileSig: sig, fileModified: modified, sheetName: found.name, headerRow: found.headerRow, importedAt: new Date().toISOString(), header, colOf, records};
 }
 async function sha1(buf) {
   try { return [...new Uint8Array(await crypto.subtle.digest("SHA-1", buf))].map(b => b.toString(16).padStart(2, "0")).join(""); }
@@ -321,7 +342,7 @@ async function loadDataFile() {
   let saved = null; try { saved = await loadEnc("state"); } catch (e) { console.warn(e); }
   origFile = buf;
   try {
-    if (saved && saved.fileSig === sig && saved.dataFile === DATA_FILE) { S = saved; S.fileModified = modified || S.fileModified; }
+    if (saved && saved.v === STATE_VERSION && saved.fileSig === sig && saved.dataFile === DATA_FILE) { S = saved; S.fileModified = modified || S.fileModified; }
     else {
       S = parseWorkbook(buf, "Report_CSKH.xlsx", sig, modified); S.dataFile = DATA_FILE;
       const n = editCount(saved);
@@ -383,6 +404,31 @@ function computeIssues() {
   }
   const nCrit = all.filter(r => issuesOf(r).some(c => ISSUES[c].sev === "crit")).length;
   const b = $("#checkBadge"); b.hidden = !nCrit; b.textContent = nCrit > 999 ? "999+" : nCrit;
+}
+// Mô tả cụ thể lỗi của một dòng (giá trị đang có trong Excel)
+function issueDetail(r, c) {
+  const o = r._orig || {}, raw = k => (S && S.colOf[k] != null && r._raw) ? r._raw[S.colOf[k]] : undefined;
+  const show = v => v == null || v === "" ? "(trống)" : v instanceof Date ? dmy(isoOf(v)) : String(v);
+  switch (c) {
+    case "NO_YEAR": return `Năm trong Excel: ${show(raw("nam") ?? r.nam)}`;
+    case "YEAR_MISMATCH": return `Năm = ${r.nam} nhưng Ngày nhận = ${dmy(r.ngay)} → bấm Lưu để tự sửa Năm theo Ngày nhận`;
+    case "MONTH_MISMATCH": return `Tháng = ${r.thang} nhưng Ngày nhận = ${dmy(r.ngay)} → bấm Lưu để tự sửa Tháng theo Ngày nhận`;
+    case "NO_MONTH": return `Năm = ${r.nam}, Tháng trống`;
+    case "YEAR_DERIVED": return `Cột Năm trong Excel trống, web lấy ${r.nam} từ Ngày nhận ${dmy(r.ngay)}`;
+    case "FUTURE_DATE": return `Ngày nhận = ${dmy(r.ngay)}`;
+    case "PLACEHOLDER_DATE": return `Ngày nhận = ${dmy(r.ngay)} (trùng với rất nhiều KH khác)`;
+    case "BAD_PHONE": return `SĐT = ${r.sdt} (${phoneKey(r.sdt).length} chữ số)`;
+    case "DUP_PHONE": { const d = all.filter(x => x.id !== r.id && phoneKey(x.sdt) === phoneKey(r.sdt)); return `Trùng với: ${d.slice(0, 3).map(x => (x.ten || "KH") + " – " + (x.acc || "?") + " – " + (dmy(x.ngay) || x.nam || "")).join("; ")}`; }
+    case "KV_MISMATCH": return `Tỉnh = ${r.tinh}, Khu vực = ${r.kv} (đúng phải là ${kvOf(r.tinh)})`;
+    case "UNKNOWN_TINH": return `Tỉnh = “${r.tinh}”`;
+    case "BAD_CODE": return [r.nguon && !NGUON.includes(r.nguon) && `Nguồn = ${r.nguon}`, r.nguonQC && !QC[r.nguonQC] && `Nguồn QC = ${r.nguonQC}`, r.lyDo && !LYDO[r.lyDo] && `Lý do = ${r.lyDo}`, r.phanKhuc && !PK[r.phanKhuc] && `Phân khúc = ${r.phanKhuc}`, r.loai && !LOAI.some(l => l[0] === r.loai) && `Loại KH = ${r.loai}`].filter(Boolean).join(", ");
+    case "STATUS_SPELL": return `Trong Excel ghi “${show(raw("trangThai"))}”`;
+    case "REASON_NOT_END": return `Trạng thái = ${r.trangThai}, Lý do kết thúc = ${LYDO[r.lyDo] || r.lyDo}`;
+    case "VALUE_ODD": return `Giá trị ghi: “${r.giaTri}”`;
+    case "ACC_CASE": return `ACC = ${r.acc}; các cách viết khác: ${(accVariants[r.acc.toLowerCase()] || []).filter(a => a !== r.acc).join(", ")}`;
+    case "STALE": return `Nhận ngày ${dmy(r.ngay)} (${daysBetween(r.ngay, TODAY)} ngày trước), vẫn ${r.trangThai}`;
+    default: return "";
+  }
 }
 function issueCount(rs, code) { return rs.filter(r => hasIssue(r, code)).length; }
 
@@ -852,7 +898,7 @@ const LIST_COLS = [
   {k: "sdt", label: "Điện thoại"}, {k: "loai", label: "Loại"}, {k: "tinh", label: "Tỉnh"}, {k: "nguon", label: "Nguồn"}, {k: "acc", label: "ACC"},
   {k: "trangThai", label: "Trạng thái", html: r => r.trangThai ? `<span class="chip" data-s="${esc(r.trangThai)}">${esc(r.trangThai)}</span>` : ""},
   {k: "iss", label: "Vấn đề", num: true, val: r => issuesOf(r).filter(c => ISSUES[c].sev !== "info").length || null,
-    html: r => { const l = issuesOf(r).filter(c => ISSUES[c].sev !== "info"); return l.length ? `<span class="warnmark" title="${esc(l.map(c => ISSUES[c].label).join("\n"))}">${l.length}</span>` : ""; }},
+    html: r => { const l = issuesOf(r).filter(c => ISSUES[c].sev !== "info"); return l.length ? `<span class="warnmark" title="${esc(l.map(c => ISSUES[c].label + (issueDetail(r, c) ? ": " + issueDetail(r, c) : "")).join("\n"))}">${l.length}</span>` : ""; }},
   {k: "nhatKy", label: "Ghi chú gần nhất", html: r => `<span class="muted clip" style="display:inline-block">${esc(String(r.nhatKy || r.thongTin || "").split("\n")[0])}</span>`},
 ];
 function renderList() {
@@ -927,7 +973,10 @@ function buildListSheet() {
     for (const [k] of CORE) if (colOf[k] != null) row[colOf[k]] = outValue(r, k);
     aoa.push(row);
   }
-  const ws = XLSX.utils.aoa_to_sheet(aoa, {cellDates: true, dateNF: "d/m/yyyy"});
+  const dateCells = [];
+  aoa.forEach((row, R) => row.forEach((v, C) => { if (v instanceof Date) { row[C] = dateToSerial(v); dateCells.push([R, C]); } }));
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  for (const [R, C] of dateCells) { const c = ws[XLSX.utils.encode_cell({r: R, c: C})]; if (c) { c.t = "n"; c.z = "d/m/yyyy"; } }
   ws["!cols"] = header.map((h, i) => ({wch: i === colOf.thongTin || i === colOf.nhatKy ? 50 : Math.min(28, Math.max(8, String(h).length + 2))}));
   return ws;
 }
@@ -958,11 +1007,11 @@ function buildStatsSheet() {
   return ws;
 }
 function buildIssueSheet() {
-  const aoa = [["Mức độ", "Vấn đề", "Dòng Excel gốc", "Năm", "Ngày nhận", "Tên KH", "Điện thoại", "ACC", "Loại KH", "Trạng thái", "Tỉnh", "Khu vực", "Giá trị HĐ", "Gợi ý"]];
+  const aoa = [["Mức độ", "Vấn đề", "Chi tiết", "Dòng Excel gốc", "Năm", "Ngày nhận", "Tên KH", "Điện thoại", "ACC", "Loại KH", "Trạng thái", "Tỉnh", "Khu vực", "Giá trị HĐ", "Gợi ý"]];
   const tip = {NO_YEAR: "Điền cột Năm", YEAR_MISMATCH: "Sửa Năm hoặc Ngày nhận cho khớp", NO_MONTH: "Điền cột Tháng", MONTH_MISMATCH: "Sửa Tháng cho khớp Ngày nhận", KV_MISMATCH: "Sửa khu vực theo tỉnh", END_NO_REASON: "Chọn lý do kết thúc", SIGNED_NO_VALUE: "Điền giá trị HĐ", VALUE_ODD: "Ghi giá trị dạng số đầy đủ (VNĐ)", DUP_PHONE: "Kiểm tra và gộp dòng trùng", BAD_PHONE: "Sửa SĐT đủ 10 số", STATUS_SPELL: "Chọn lại trạng thái từ danh sách", ACC_CASE: "Thống nhất cách viết tên ACC", STALE: "Cập nhật trạng thái"};
   for (const r of all) for (const c of issuesOf(r)) { const d = ISSUES[c]; if (d.sev === "info" && c !== "STALE") continue;
-    aoa.push([SEV_LABEL[d.sev], d.label, r._row || (r._new ? "mới thêm" : ""), r.nam || "", r.ngay ? dmy(r.ngay) : "", r.ten || "", r.sdt || "", r.acc || "", r.loai || "", r.trangThai || "", r.tinh || "", r.kv || "", r.giaTri || "", tip[c] || ""]); }
-  const ws = XLSX.utils.aoa_to_sheet(aoa); ws["!cols"] = [{wch: 10}, {wch: 36}, {wch: 8}, {wch: 6}, {wch: 11}, {wch: 22}, {wch: 12}, {wch: 10}, {wch: 7}, {wch: 12}, {wch: 12}, {wch: 7}, {wch: 14}, {wch: 34}];
+    aoa.push([SEV_LABEL[d.sev], d.label, issueDetail(r, c), r._row || (r._new ? "mới thêm" : ""), r.nam || "", r.ngay ? dmy(r.ngay) : "", r.ten || "", r.sdt || "", r.acc || "", r.loai || "", r.trangThai || "", r.tinh || "", r.kv || "", r.giaTri || "", tip[c] || ""]); }
+  const ws = XLSX.utils.aoa_to_sheet(aoa); ws["!cols"] = [{wch: 10}, {wch: 36}, {wch: 48}, {wch: 8}, {wch: 6}, {wch: 11}, {wch: 22}, {wch: 12}, {wch: 10}, {wch: 7}, {wch: 12}, {wch: 12}, {wch: 7}, {wch: 14}, {wch: 34}];
   ws["!autofilter"] = {ref: XLSX.utils.encode_range({s: {r: 0, c: 0}, e: {r: aoa.length - 1, c: aoa[0].length - 1}})};
   return ws;
 }
@@ -971,11 +1020,11 @@ async function exportExcel(suffix = "") {
   if (!S) return;
   if (!can.export()) { toast("Tài khoản của bạn không có quyền xuất file"); return; }
   try {
-    const wb = origFile ? XLSX.read(origFile, {type: "array", cellDates: true, cellFormula: true, cellNF: true}) : XLSX.utils.book_new();
+    const wb = origFile ? XLSX.read(origFile, {type: "array", cellFormula: true, cellNF: true}) : XLSX.utils.book_new();
     putSheet(wb, S.sheetName, buildListSheet());
     putSheet(wb, "Thống kê (web)", buildStatsSheet());
     putSheet(wb, "Kiểm tra dữ liệu (web)", buildIssueSheet());
-    let out = XLSX.write(wb, {bookType: "xlsx", type: "array", cellDates: true, compression: true});
+    let out = XLSX.write(wb, {bookType: "xlsx", type: "array", compression: true});
     out = forceRecalc(out);
     const base = (S.fileName || "CSKH").replace(/\.(xlsx|xlsm|xls)$/i, "");
     const a = document.createElement("a");
@@ -1048,7 +1097,7 @@ function buildForm(rec, {isEdit, onDone}) {
   E("sdt").oninput();
   if (isEdit) { // các vấn đề của dòng này
     const l = issuesOf(r);
-    if (l.length) form.insertAdjacentHTML("afterbegin", `<div class="insights" style="grid-column:span 12;margin-top:0;padding-top:0;border-top:0"><h3>Vấn đề dữ liệu của dòng này</h3>${l.map(c => `<div class="ins"><span class="sev sev-${ISSUES[c].sev}">${SEV_ICON[ISSUES[c].sev]}</span><span><b>${esc(ISSUES[c].label)}</b> — ${esc(ISSUES[c].desc)}</span></div>`).join("")}</div>`);
+    if (l.length) form.insertAdjacentHTML("afterbegin", `<div class="insights" style="grid-column:span 12;margin-top:0;padding-top:0;border-top:0"><h3>Vấn đề dữ liệu của dòng này</h3>${l.map(c => `<div class="ins"><span class="sev sev-${ISSUES[c].sev}">${SEV_ICON[ISSUES[c].sev]}</span><span><b>${esc(ISSUES[c].label)}</b> — ${esc(issueDetail(r, c) || ISSUES[c].desc)}</span></div>`).join("")}</div>`);
   }
   const hist = weeklyHistory(r);
   if (hist.length) {
