@@ -1,0 +1,13 @@
+# KHÔNG đưa dữ liệu gốc và mật khẩu lên GitHub
+data/*.xlsx
+data/*.xls
+data/*.xlsm
+secrets.local.json
+*.local.json
+
+# rác hệ thống
+_test.xlsx
+~$*
+*.tmp
+.DS_Store
+Thumbs.db

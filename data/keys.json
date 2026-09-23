@@ -1,0 +1,26 @@
+{
+ "v": 1,
+ "kdf": "PBKDF2-SHA256",
+ "iter": 600000,
+ "updatedAt": "2026-09-23T08:08:03.280Z",
+ "users": [
+  {
+   "id": "53bf8cf3e7512b95a6f147099275324f47822a46362a85794b781d91d00ac138",
+   "salt": "0YyzZ94Y/e7RXNz0rmrn7Q==",
+   "iv": "LmPmtiRYWJ2mvO4q",
+   "ct": "mKtsxgWyqGIvqgTzAFF2RWw2wIHKVJwoAhCPv9f0jzLoOaVPqXrsGPZ49GWE/vpokJ04MHbHfgUMINbNb4WZmiv6bQwNrJ0SwT98bUSif9hUA4a50CFD24R+b+shwNMrrPTztudpC9oY3X3DjY5Tenvw7LBapyE="
+  },
+  {
+   "id": "60cd78501ff837be1b1b6e5e9c31b5a28c133b8ed57426bce672432228e7cc6e",
+   "salt": "pZLf0B3QxRPelcKSJH77uw==",
+   "iv": "vQg/rxEbeGSaH6jg",
+   "ct": "JRmszy2llKvoSPP91U+nIaGES1Vz4/9FrwTVDUcLzNEfUn6OvZRA3o1m6McVfOST7N4ggbO9TcooYaLep5ZGSSipU3+EyNWLMrNM3DSdoPAwtRMybD9KBUzwvGtl2MuDYBUQBpHLDJ60yGyc5j8qocQtKKELkygzvg=="
+  },
+  {
+   "id": "83d751e3919acf6ba8388fb1c3b3320be0f5e99ad4f616aed088d4d4cff99a9f",
+   "salt": "tIPZ8T3bEWZvMpRCe+w+Ow==",
+   "iv": "TdwR6NbTDz4CxLwY",
+   "ct": "ELiiJohtAxqqOTLFGBW31tHaaP0VTvlZ7IVqN8ZSidPHFaoaCJ0xssSh1UNXYkYTZJjagck58jWEyd8Oyyn05kzg7SPIUVwJF4vznmsANgFHrxxue0upZ3SAGiXygOhkLoI7tTiwpZX+yEbFT3DQhhgfC9xHnmxIpg=="
+  }
+ ]
+}

@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sổ CSKH SmartHome</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-row">
+    <div class="brand"><h1>Sổ CSKH SmartHome</h1><span id="srcInfo">Chưa có dữ liệu</span></div>
+    <span id="userChip" class="user-chip"></span>
+    <button class="btn primary" id="btnExport" disabled hidden>Xuất Excel</button>
+    <span id="clearHost" hidden><button class="btn danger" id="btnClear" disabled title="Bỏ các chỉnh sửa trên web, quay về đúng dữ liệu trong file Excel">Bỏ chỉnh sửa</button></span>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-view="overview">Tổng quan</button>
+    <button role="tab" aria-selected="false" data-view="list">Danh sách KH</button>
+    <button role="tab" aria-selected="false" data-view="check">Kiểm tra dữ liệu <span class="badge" id="checkBadge" hidden></span></button>
+    <button role="tab" aria-selected="false" data-view="add">+ Thêm khách hàng</button>
+  </nav>
+</header>
+
+<div class="wrap">
+  <div id="loginBox" class="login" hidden>
+    <form id="loginForm" class="card" autocomplete="on">
+      <h2>Đăng nhập</h2>
+      <p class="sub">Dữ liệu khách hàng đã được mã hoá. Đăng nhập để giải mã và xem.</p>
+      <div class="f"><label for="lgUser">Tên đăng nhập</label><input id="lgUser" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required></div>
+      <div class="f"><label for="lgPass">Mật khẩu</label><input id="lgPass" name="password" type="password" autocomplete="current-password" required></div>
+      <p class="lg-msg" id="lgMsg" role="alert"></p>
+      <button class="btn primary" id="lgBtn" type="submit">Đăng nhập</button>
+    </form>
+  </div>
+  <div id="statusBox" class="drop"><h2>Đang tải…</h2><p>Đang khởi động.</p></div>
+  <div id="prevBox" class="banner" hidden></div>
+
+  <section class="view" id="view-overview">
+    <div class="filters">
+      <label>Năm<select class="ctl" id="fYear"></select></label>
+      <label>Loại KH<select class="ctl" id="fLoai"><option value="">Tất cả</option></select></label>
+      <label>ACC phụ trách<select class="ctl" id="fAcc"><option value="">Tất cả</option></select></label>
+    </div>
+    <div id="healthBanner"></div>
+    <div class="kpis" id="kpis"></div>
+    <div class="grid">
+      <div class="card c8"><h2 id="tMonthly">Khách hàng mới theo tháng</h2><p class="sub">Chia theo loại khách hàng · rê chuột vào cột để xem chi tiết</p><div class="legend" id="lgMonthly"></div><div id="chMonthly"></div><div class="insights" id="inMonthly"></div></div>
+      <div class="card c4"><h2>Trạng thái chăm sóc</h2><p class="sub">Số KH và tỷ trọng</p><div id="chStatus" class="hbars"></div><div class="insights" id="inStatus"></div></div>
+      <div class="card c6"><h2>Hiệu quả theo nguồn</h2><p class="sub">Tỷ lệ ký = Đã ký HĐ ÷ tổng KH của nguồn · bấm tiêu đề cột để sắp xếp</p><div class="tbl-wrap" id="tbSource"></div><div class="insights" id="inSource"></div></div>
+      <div class="card c6"><h2>Theo loại khách hàng</h2><p class="sub">So sánh hiệu quả giữa ĐL, KHC, KTS, DA</p><div class="tbl-wrap" id="tbLoai"></div><div class="insights" id="inLoai"></div></div>
+      <div class="card c6"><h2>Lý do kết thúc</h2><p class="sub">Trong số KH có trạng thái “Kết thúc”</p><div id="chReason" class="hbars"></div><div class="insights" id="inReason"></div></div>
+      <div class="card c6"><h2>Phân khúc đại lý</h2><p class="sub">Chỉ tính KH loại ĐL đã được đánh giá</p><div id="chSeg" class="hbars"></div><div class="insights" id="inSeg"></div></div>
+      <div class="card c6"><h2>Chiến dịch quảng cáo</h2><p class="sub">Theo cột Nguồn QC</p><div class="tbl-wrap" id="tbQC"></div><div class="insights" id="inQC"></div></div>
+      <div class="card c6"><h2>Khu vực</h2><p class="sub">Tỷ trọng so với năm trước</p><div class="tbl-wrap" id="tbKV"></div><div class="insights" id="inKV"></div></div>
+      <div class="card c12"><h2>Theo người phụ trách</h2><p class="sub">Ô được tô màu = lệch đáng kể so với trung bình cả nhóm · bấm một dòng để xem danh sách KH</p><div class="tbl-wrap" id="tbAcc"></div><div class="insights" id="inAcc"></div></div>
+      <div class="card c12"><h2>Hợp đồng đã ký</h2><p class="sub" id="subContracts"></p><div class="tbl-wrap" id="tbContracts"></div><div class="insights" id="inContracts"></div></div>
+    </div>
+  </section>
+
+  <section class="view" id="view-list" hidden>
+    <div class="filters">
+      <label>Tìm kiếm<input class="ctl" id="q" type="search" placeholder="Tên, SĐT, tỉnh, ghi chú…" style="width:240px"></label>
+      <label>Năm<select class="ctl" id="lYear"></select></label>
+      <label>Loại KH<select class="ctl" id="lLoai"><option value="">Tất cả</option></select></label>
+      <label>Trạng thái<select class="ctl" id="lSt"><option value="">Tất cả</option></select></label>
+      <label>ACC<select class="ctl" id="lAcc"><option value="">Tất cả</option></select></label>
+      <label>Nguồn<select class="ctl" id="lNguon"><option value="">Tất cả</option></select></label>
+      <label>Vấn đề dữ liệu<select class="ctl" id="lIssue"><option value="">Không lọc</option></select></label>
+      <button class="btn" id="lReset">Bỏ lọc</button>
+    </div>
+    <div class="card" style="padding:0"><div class="tbl-wrap" id="tbList"></div></div>
+    <div class="pager"><span id="pgInfo"></span><button class="btn" id="pgPrev">‹ Trước</button><button class="btn" id="pgNext">Sau ›</button></div>
+  </section>
+
+  <section class="view" id="view-check" hidden>
+    <div class="filters">
+      <label>Năm<select class="ctl" id="cYear"></select></label>
+      <label>Mức độ<select class="ctl" id="cSev"><option value="">Tất cả</option><option value="crit">Lỗi – làm sai thống kê</option><option value="warn">Cảnh báo – cần xem lại</option><option value="info">Lưu ý</option></select></label>
+    </div>
+    <div class="kpis" id="checkKpis"></div>
+    <div class="card"><h2>Danh sách vấn đề</h2><p class="sub">Bấm một dòng để xem các khách hàng bị ảnh hưởng và sửa trực tiếp</p><div class="tbl-wrap" id="tbCheck"></div></div>
+    <div class="card" style="margin-top:12px"><h2>Đối chiếu với sheet “Thống kê” trong Excel</h2><p class="sub">Vì sao số trên web có thể khác file Excel</p><div id="reconcile"></div></div>
+  </section>
+
+  <section class="view" id="view-add" hidden>
+    <div class="card" style="max-width:980px">
+      <h2 style="font-size:17px;margin-bottom:4px">Thêm khách hàng mới</h2>
+      <p class="sub">Năm, tháng, tuần tự tính từ ngày nhận; khu vực tự điền theo tỉnh. Trường có <b style="color:var(--crit-ink)">*</b> là bắt buộc.</p>
+      <div id="addFormHost"></div>
+    </div>
+  </section>
+</div>
+
+<div id="drawerHost"></div>
+<div id="tip" hidden></div>
+<div id="toastHost"></div>
+<datalist id="dlAcc"></datalist><datalist id="dlTinh"></datalist><datalist id="dlDL"></datalist>
+
+<template id="formTpl">
+<form class="cust" novalidate>
+  <div class="fs-title">Tiếp nhận</div>
+  <div class="f w3"><label for="F_ngay">Ngày nhận <b>*</b></label><input id="F_ngay" name="ngay" type="date" required><span class="hint" data-derived></span></div>
+  <div class="f w3"><label for="F_acc">ACC phụ trách <b>*</b></label><input id="F_acc" name="acc" list="dlAcc" required autocomplete="off"></div>
+  <div class="f w3"><label for="F_nguon">Nguồn <b>*</b></label><select id="F_nguon" name="nguon" required></select></div>
+  <div class="f w3"><label for="F_nguonQC">Nguồn QC</label><select id="F_nguonQC" name="nguonQC"></select></div>
+
+  <div class="fs-title">Khách hàng</div>
+  <div class="f"><label for="F_ten">Tên khách hàng</label><input id="F_ten" name="ten" autocomplete="off"></div>
+  <div class="f"><label for="F_sdt">Điện thoại <b>*</b></label><input id="F_sdt" name="sdt" inputmode="tel" required autocomplete="off"><span class="warn" data-phone hidden></span></div>
+  <div class="f"><label for="F_email">Email</label><input id="F_email" name="email" type="email" autocomplete="off"></div>
+  <div class="f w6"><label for="F_diaChi">Địa chỉ</label><input id="F_diaChi" name="diaChi" autocomplete="off"></div>
+  <div class="f w3"><label for="F_tinh">Tỉnh/TP <b>*</b></label><input id="F_tinh" name="tinh" list="dlTinh" required autocomplete="off"></div>
+  <div class="f w3"><label for="F_kv">Khu vực</label><select id="F_kv" name="kv"><option value=""></option><option>HN</option><option>Bắc</option><option>HCM</option><option>Nam</option></select></div>
+  <div class="f"><label for="F_loai">Loại KH <b>*</b></label><select id="F_loai" name="loai" required></select></div>
+  <div class="f"><label for="F_nganh">Lĩnh vực, ngành nghề</label><input id="F_nganh" name="nganh" autocomplete="off"></div>
+  <div class="f"><label for="F_congTrinh">Loại công trình</label><select id="F_congTrinh" name="congTrinh"></select></div>
+
+  <div class="fs-title">Chăm sóc</div>
+  <div class="f"><label for="F_trangThai">Trạng thái <b>*</b></label><select id="F_trangThai" name="trangThai" required></select></div>
+  <div class="f"><label for="F_lyDo">Lý do kết thúc</label><select id="F_lyDo" name="lyDo"></select><span class="hint">Chỉ dùng khi trạng thái là “Kết thúc”</span></div>
+  <div class="f"><label for="F_phanKhuc">Đánh giá phân khúc</label><select id="F_phanKhuc" name="phanKhuc"></select></div>
+  <div class="f"><label for="F_giaTri">Giá trị báo giá/HĐ (VNĐ)</label><input id="F_giaTri" name="giaTri" inputmode="numeric" autocomplete="off"></div>
+  <div class="f"><label for="F_giaiPhap">Giải pháp</label><select id="F_giaiPhap" name="giaiPhap"></select></div>
+  <div class="f"><label for="F_dlChuyen">Đại lý được chuyển KH</label><input id="F_dlChuyen" name="dlChuyen" list="dlDL" autocomplete="off"></div>
+  <div class="f w12"><label for="F_thongTin">Thông tin tiếp nhận</label><textarea id="F_thongTin" name="thongTin"></textarea></div>
+  <div class="f w12"><label for="F_note">Thêm ghi chú chăm sóc</label><input id="F_note" name="_note" autocomplete="off" placeholder="VD: Gọi lại, KH hẹn tuần sau gửi bản vẽ"><span class="hint">Được thêm vào đầu “Nhật ký”, kèm ngày hôm nay</span></div>
+  <div class="f w12"><label for="F_nhatKy">Nhật ký</label><textarea id="F_nhatKy" name="nhatKy"></textarea></div>
+  <div class="fs-title" data-hist-title hidden>Lịch sử chăm sóc theo tuần (từ file Excel)</div>
+  <div class="history" data-hist hidden></div>
+  <div class="form-actions">
+    <span class="sp muted" data-msg></span>
+    <span data-del></span>
+    <button type="button" class="btn" data-cancel>Huỷ</button>
+    <button type="submit" class="btn primary" data-save>Lưu khách hàng</button>
+  </div>
+</form>
+</template>
+
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
