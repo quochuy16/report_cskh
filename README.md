@@ -1,130 +1,103 @@
 # Sổ CSKH SmartHome
 
-Web quản lý và thống kê khách hàng CSKH:
+Website thống kê và quản lý danh sách khách hàng CSKH, có đăng nhập và phân quyền. Dữ liệu được **mã hoá AES-256** trước khi đưa lên GitHub. Không có tài khoản thì không đọc được, kể cả khi tải thẳng file trong repo.
 
-- **Giao diện**: trang tĩnh trong `public/`.
-- **Server**: Vercel Functions trong `api/`, chạy trên gói Vercel Hobby.
-- **Database**: Postgres (Neon, gói miễn phí 0,5 GB).
+## Bảo mật hoạt động thế nào
 
-Dữ liệu nằm trong database. Mọi người cùng xem và sửa trên một bản duy nhất, mọi thay đổi đều được lưu lịch sử, và có thể **xuất Excel** bất cứ lúc nào.
+| File | Lên GitHub? | Nội dung |
+|---|---|---|
+| `data/Report_CSKH.xlsx` | **Không** (đã chặn bằng `.gitignore`) | File Excel gốc, chỉ nằm trên máy bạn |
+| `secrets.local.json` | **Không** (đã chặn bằng `.gitignore`) | Username, mật khẩu và khoá dữ liệu. **Giữ kỹ, không gửi cho ai** |
+| `data/Report_CSKH.enc` | Có | File Excel đã mã hoá (AES-256-GCM) |
+| `data/keys.json` | Có | Khoá dữ liệu được bọc riêng bằng mật khẩu từng tài khoản (PBKDF2-SHA256, 600.000 vòng). Username chỉ lưu dạng mã băm |
 
-## Kiến trúc
+- Khi đăng nhập, trình duyệt dùng mật khẩu để mở khoá dữ liệu. Sai mật khẩu thì không giải mã được.
+- Chỉnh sửa lưu trong trình duyệt cũng được mã hoá.
+- Web tự đăng xuất sau 60 phút không thao tác, hoặc khi đóng tab.
 
-```
-Trình duyệt ──► Vercel ── public/     (giao diện: index.html, assets/, vendor/)
-                       └─ api/*.js    (đăng nhập, dữ liệu, nhập Excel, tài khoản)
-                              │
-                              ▼
-                       Neon Postgres  (khách hàng, lịch sử chỉnh sửa, tài khoản, file mẫu Excel)
-```
+## Tài khoản và quyền
 
-**Phân quyền kiểm tra ở server**:
-
-| Quyền | Xem | Thêm / sửa KH | Xuất Excel | Xoá KH | Nhập Excel, quản lý tài khoản |
+| Quyền | Xem | Thêm / sửa KH | Xuất Excel | Xoá KH | Bỏ chỉnh sửa |
 |---|---|---|---|---|---|
-| Quản trị (admin) | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Biên tập (editor) | ✓ | ✓ | ✓ | – | – |
-| Chỉ xem (viewer) | ✓ | – | – | – | – |
+| **admin** (Quản trị) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **editor** (Biên tập) | ✓ | ✓ | ✓ | – | – |
+| **viewer** (Chỉ xem) | ✓ | – | – | – | – |
 
-**Bảo mật**:
-- Mật khẩu được băm bằng scrypt.
-- Phiên đăng nhập lưu trong cookie HttpOnly, hết hạn sau 12 giờ; web tự đăng xuất sau 60 phút không thao tác.
-- Sai mật khẩu quá 8 lần trong 15 phút thì tài khoản bị tạm chặn.
-- Có chống CSRF.
-- Khoá tài khoản hoặc đặt lại mật khẩu thì phiên cũ của người đó mất hiệu lực ngay.
-
-## Triển khai lần đầu
-
-### 1. Đẩy code lên GitHub
-Chạy trong thư mục `web`:
+Xem lại tài khoản:
 
 ```bash
-git add -A
-git status
-git commit -m "Chuyển sang database + server"
-git push
+node tools/encrypt.js --show
 ```
 
-Sau khi chạy `git status`, danh sách **không được có** `data/`, file `.xlsx` hay `secrets.local.json`. Các file này đã bị chặn bằng `.gitignore`.
-
-### 2. Cấu hình project trên Vercel
-Vào **Settings → Build and Deployment**:
-- **Framework Preset**: `Other`
-- **Root Directory**: để trống
-- **Build Command / Output Directory / Install Command**: để trống, không bật Override (`vercel.json` đã cấu hình sẵn)
-
-### 3. Tạo database Neon miễn phí
-1. Vào tab **Storage** → **Create Database**.
-2. Chọn **Neon** (Serverless Postgres) → **Continue**.
-3. Region: **Singapore (ap-southeast-1)**. Plan: **Free**. Đặt tên, ví dụ `cskh-db` → **Create**.
-4. Ở bước **Connect to Project**, chọn project này và tích cả **Production, Preview, Development** → **Connect**.
-
-Vercel tự thêm biến `DATABASE_URL` vào project. Bảng dữ liệu được tạo tự động ở lần chạy đầu.
-
-### 4. Thêm biến môi trường
-Vào **Settings → Environment Variables** → **Add**, áp dụng cho cả Production và Preview:
-
-| Tên | Giá trị |
-|---|---|
-| `AUTH_SECRET` | Chuỗi ngẫu nhiên ≥ 32 ký tự (dùng để ký phiên đăng nhập) |
-| `ADMIN_USERNAME` | Tên đăng nhập admin đầu tiên, ví dụ `admin.t7s62tcvqe` |
-| `ADMIN_PASSWORD` | Mật khẩu admin đầu tiên (≥ 12 ký tự) |
-
-Tạo `AUTH_SECRET` bằng lệnh:
+Đổi toàn bộ mật khẩu. Lệnh này tạo tài khoản mới và mã hoá lại; mật khẩu cũ hết hiệu lực sau khi đẩy lên GitHub:
 
 ```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+node tools/encrypt.js --new-passwords
 ```
 
-`ADMIN_USERNAME` và `ADMIN_PASSWORD` **chỉ dùng cho lần đăng nhập đầu tiên**, khi database chưa có tài khoản nào. Sau đó đổi mật khẩu trong web: tab *Tài khoản → Đặt lại mật khẩu*.
+> Phân quyền được áp dụng trên giao diện web. Dữ liệu gốc trên GitHub chỉ thay đổi được bởi người có quyền push vào repo, nên dù ai chỉnh sửa trên web cũng không ảnh hưởng tới file trên GitHub.
 
-### 5. Deploy lại
-Vào **Deployments** → bấm **⋯** ở lần deploy mới nhất → **Redeploy**. Việc này cần làm vì biến môi trường chỉ có hiệu lực từ lần deploy sau khi thêm.
+## Cập nhật dữ liệu (thay file Excel)
 
-### 6. Nhập dữ liệu
-1. Mở web → đăng nhập bằng `ADMIN_USERNAME` / `ADMIN_PASSWORD`.
-2. Bấm **Nhập Excel** → chọn file `Report_CSKH….xlsx`. Khoảng 10–20 giây là xong.
-3. Vào tab **Tài khoản & hệ thống** → tạo tài khoản cho từng người, chọn quyền phù hợp.
-   - Mật khẩu ngẫu nhiên chỉ hiện **một lần**. Bấm *Sao chép* rồi gửi riêng cho người đó.
+**Kéo thả file Excel mới vào `capnhat.bat`** là xong. Script tự làm 4 việc:
+1. Chép file vào `data/Report_CSKH.xlsx`.
+2. Mã hoá.
+3. Kiểm tra không có file Excel gốc hay mật khẩu nào sắp bị đưa lên GitHub.
+4. Commit và push.
 
-## Sử dụng hằng ngày
+Vercel / GitHub Pages tự deploy lại sau khi push (khoảng 1–2 phút); bạn chỉ cần tải lại trang.
 
-- **Sửa hoặc thêm khách hàng**: bấm **Lưu** là ghi thẳng vào database.
-  - Người khác thấy thay đổi trong vòng khoảng 45 giây, hoặc ngay khi quay lại tab web.
-  - Nếu 2 người sửa cùng lúc một khách hàng, người lưu sau được báo và được tải bản mới nhất, không ai ghi đè mất dữ liệu của ai.
-- **Lịch sử**: mở một khách hàng → **Xem lịch sử chỉnh sửa** để biết ai sửa gì, lúc nào, giá trị trước và sau.
-- **Xuất Excel**: file có đủ cột như file gốc, các sheet gốc (kèm công thức), nhật ký tuần, cùng sheet "Thống kê (web)" và "Kiểm tra dữ liệu (web)".
-- **Nhập Excel lại** (admin): **thay thế toàn bộ** dữ liệu hiện tại. Nên bấm **Xuất Excel** trước để giữ bản đang có.
-- **Dung lượng**: tab *Tài khoản & hệ thống* hiển thị dung lượng đã dùng và nút dọn lịch sử chỉnh sửa cũ.
-
-## Chạy thử trên máy
-Cần Node.js 20 trở lên:
+Cách khác, chạy bằng lệnh:
 
 ```bash
-npm install
-node tools/server.js
+node tools/update.js "D:\duong-dan\file-moi.xlsx"
 ```
 
-Mở http://localhost:8080 và đăng nhập `admin` / `admin-local-123`. Khi chạy trên máy, web dùng database cục bộ (PGlite) lưu ở `~/.cskh-localdb`, không ảnh hưởng dữ liệu thật. Muốn chạy trên máy nhưng nối vào database thật trên Neon thì đặt biến `DATABASE_URL` trước khi chạy.
+> **Không** đưa thẳng file `.xlsx` lên GitHub (kể cả qua nút Upload trên trang GitHub). Web không đọc file đó, và repo public sẽ làm lộ toàn bộ dữ liệu khách hàng.
 
-## Giới hạn gói miễn phí
+Về file Excel:
+- File cần có một sheet chứa cột "Điện thoại" và "Trạng thái". Web nhận cột theo **tên tiêu đề**, không theo vị trí.
+- **Chỉnh sửa trên web** chỉ lưu trong trình duyệt của máy đó. Muốn giữ lại thì bấm **Xuất Excel**, rồi dùng file xuất ra thay `data/Report_CSKH.xlsx` và mã hoá lại.
+- Nếu file dữ liệu bị thay trong khi trên web còn chỉnh sửa chưa xuất, web hiện nút **Tải bản chỉnh sửa cũ**.
 
-- **Neon Free**:
-  - Dung lượng 0,5 GB. 2.500 khách hàng chiếm khoảng 7 MB, nên còn chứa được khoảng 180.000 khách hàng nữa.
-  - Database tự "ngủ" khi không có ai dùng, nên lần mở đầu tiên sau đó có thể chậm thêm 1–2 giây.
-- **Vercel Hobby**: chỉ dành cho mục đích **phi thương mại** (theo điều khoản của Vercel). Dùng chính thức cho công ty thì nên nâng lên gói Pro.
+## Cách chạy
+
+- **Vercel**: *Add New → Project* → chọn repo → **Framework Preset: Other**, Root Directory để trống, không cần Build Command → Deploy. Cấu hình đã có sẵn trong `vercel.json` và `.vercelignore` (web là trang tĩnh, không có server). Mỗi lần push, Vercel tự deploy lại.
+- **GitHub Pages**: vào repo → *Settings → Pages → Branch: `main` / `(root)` → Save*. Web chạy tại `https://<tài-khoản>.github.io/<tên-repo>/`.
+- **Trên máy** (cần Node.js): chạy lệnh dưới đây rồi mở `http://localhost:8080`.
+
+  ```bash
+  node tools/server.js
+  ```
+
+  Chức năng mã hoá của trình duyệt chỉ chạy trên `https://` hoặc `localhost`. Truy cập từ máy khác qua `http://<IP>` sẽ không đăng nhập được, hãy dùng GitHub Pages.
+
+## Chức năng
+
+1. **Tổng quan**: KPI so với cùng kỳ năm trước; biểu đồ và bảng theo tháng, trạng thái, nguồn, loại KH, lý do kết thúc, phân khúc, chiến dịch QC, khu vực, người phụ trách, hợp đồng.
+   - Mỗi bảng có khung **Nhận định** tự phát hiện số liệu bất thường.
+   - Mọi bảng **sắp xếp được** khi bấm tiêu đề cột.
+2. **Danh sách KH**: tìm kiếm, lọc (kể cả theo vấn đề dữ liệu), sửa, xoá.
+   - **Nhật ký theo tuần**: mở một KH → mục *Nhật ký chăm sóc theo tuần*.
+     - Chọn **Tuần** và **Năm** (mặc định tuần hiện tại; tuần đã có nhật ký có dấu ✓), nhập nội dung rồi bấm **Lưu**.
+     - Nội dung được ghi vào đúng cột "Tuần N" của năm đó trong Excel. Nếu chưa có cột tuần đó, web tự chèn đúng vị trí.
+     - Tuần đã có nhật ký thì ghi nối tiếp thành dòng mới.
+     - Các tuần cũ hiện ngay bên dưới để sửa trực tiếp; xoá hết chữ là xoá nhật ký tuần đó.
+   - **Nhiều số điện thoại**: ghi `số1;số2`, ví dụ `0912345678;0987654321`. Web kiểm tra từng số (di động 10 số, số bàn 02x 11 số), tìm kiếm và phát hiện trùng theo từng số.
+3. **Kiểm tra dữ liệu**: các dòng lỗi, cảnh báo hoặc lưu ý, kèm đối chiếu với sheet Thống kê của Excel.
+4. **+ Thêm khách hàng**.
+5. **Xuất Excel**: file gồm các phần sau:
+   - Giữ nguyên các cột và sheet gốc.
+   - Thêm sheet "Thống kê (web)" và "Kiểm tra dữ liệu (web)".
 
 ## Cấu trúc
 
-| Đường dẫn | Vai trò |
+| File | Vai trò |
 |---|---|
-| `public/index.html`, `public/assets/` | Giao diện, thống kê, nhận định, kiểm tra dữ liệu, form, xuất Excel |
-| `public/vendor/xlsx.full.min.js` | Thư viện SheetJS đọc/ghi Excel |
-| `api/login.js`, `logout.js`, `me.js` | Đăng nhập / đăng xuất / người dùng hiện tại |
-| `api/data.js` | Đọc dữ liệu (phân trang) và đồng bộ thay đổi |
-| `api/record.js` | Thêm / sửa / xoá khách hàng, xem lịch sử |
-| `api/import.js`, `api/template.js` | Nhập Excel vào database; file mẫu để xuất Excel |
-| `api/users.js`, `api/stats.js` | Quản lý tài khoản; dung lượng và dọn lịch sử |
-| `api/_lib/` | Kết nối database, xác thực, tiện ích HTTP |
-| `tools/server.js` | Server chạy thử trên máy |
-| `vercel.json` | Cấu hình Vercel (thư mục `public/`, API, header bảo mật) |
+| `index.html`, `assets/style.css` | Giao diện |
+| `assets/app.js` | Đăng nhập, giải mã, thống kê, nhận định, kiểm tra dữ liệu, form, xuất Excel |
+| `tools/encrypt.js` | Tạo tài khoản và mã hoá dữ liệu |
+| `data/Report_CSKH.enc`, `data/keys.json` | Dữ liệu đã mã hoá |
+| `vendor/xlsx.full.min.js` | Thư viện SheetJS 0.18.5 |
+| `vercel.json`, `.vercelignore` | Cấu hình deploy tĩnh trên Vercel |
+| `tools/server.js` | Web server chạy trên máy; tự chặn không phục vụ file `.xlsx` và `secrets.local.json` |
