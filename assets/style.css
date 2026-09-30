@@ -10,7 +10,7 @@
   --shadow:0 1px 2px rgba(16,20,19,.06),0 8px 24px rgba(16,20,19,.06);
   --font:"Be Vietnam Pro",system-ui,-apple-system,"Segoe UI",sans-serif;
 }
-@media (prefers-color-scheme:dark){:root{color-scheme:dark;
+:root[data-theme="dark"]{color-scheme:dark;
   --bg:#0f1211; --surface:#181c1b; --surface-2:#202524; --ink:#f2f4f3; --ink-2:#bfc6c2; --muted:#8a918d;
   --line:#2a302e; --line-2:#3a413e; --accent:#4a8fe8; --accent-ink:#0b1320; --accent-soft:#1a2a40;
   --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
@@ -18,7 +18,7 @@
   --chip-cs:#1a2a40; --chip-cs-ink:#9ec5f4; --chip-tn:#262048; --chip-tn-ink:#b7aef2;
   --chip-tk:#3a2e10; --chip-tk-ink:#f0c860; --chip-ky:#15311a; --chip-ky-ink:#6fd56f;
   --chip-kt:#262b29; --chip-kt-ink:#aab2ae; --chip-dy:#123328; --chip-dy-ink:#6fd8b0;
-  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.3);}}
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.3);}
 
 *{box-sizing:border-box}
 html,body{margin:0}
@@ -145,7 +145,7 @@ form.cust{display:grid;grid-template-columns:repeat(12,1fr);gap:14px 16px}
 
 /* ===== Nhận định & kiểm tra dữ liệu ===== */
 :root{--warn:#e0a000;--warn-ink:#8a5a00;--warn-soft:#fdf3dc;--crit-soft:#fbe6e6;--good-soft:#e2f3e2;--info-soft:#e8eef7;--info-ink:#2b5a9b}
-@media (prefers-color-scheme:dark){:root{--warn-ink:#f0c060;--warn-soft:#352a12;--crit-soft:#3a1c1c;--good-soft:#16301a;--info-soft:#1a2638;--info-ink:#9ec0ee}}
+:root[data-theme="dark"]{--warn-ink:#f0c060;--warn-soft:#352a12;--crit-soft:#3a1c1c;--good-soft:#16301a;--info-soft:#1a2638;--info-ink:#9ec0ee}
 .c3{grid-column:span 3}
 @media (max-width:900px){.c3{grid-column:span 12}}
 .insights{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:6px}
@@ -221,3 +221,4 @@ td.flag{color:var(--warn-ink)}
 @media (max-width:760px){.wk-status{padding-bottom:0}}
 .wk-cols{font-size:11px;color:var(--muted);font-weight:600;position:sticky;top:0;background:var(--bg);z-index:1;padding-bottom:2px}
 .wk-cols span:first-child{text-align:right}
+.theme-btn{padding:6px 10px;font-size:16px;line-height:1;min-width:36px}
